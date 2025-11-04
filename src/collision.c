@@ -1480,22 +1480,24 @@ bool test_box_character(const SCollision *__restrict__ pCollision, int x, int y)
   if ((mask & check) == 0)
     return false;
 
-  // if (check_point_int(pCollision, x - HALFPHYSICALSIZE, y + HALFPHYSICALSIZE))
-  //   return true;
-  // if (check_point_int(pCollision, x + HALFPHYSICALSIZE, y + HALFPHYSICALSIZE))
-  //   return true;
-  // if (check_point_int(pCollision, x - HALFPHYSICALSIZE, y - HALFPHYSICALSIZE))
-  //   return true;
-  // if (check_point_int(pCollision, x + HALFPHYSICALSIZE, y - HALFPHYSICALSIZE))
-  //   return true;
-  //
-  // return false;
+  if (check_point_int(pCollision, x - HALFPHYSICALSIZE, y + HALFPHYSICALSIZE))
+    return true;
+  if (check_point_int(pCollision, x + HALFPHYSICALSIZE, y + HALFPHYSICALSIZE))
+    return true;
+  if (check_point_int(pCollision, x - HALFPHYSICALSIZE, y - HALFPHYSICALSIZE))
+    return true;
+  if (check_point_int(pCollision, x + HALFPHYSICALSIZE, y - HALFPHYSICALSIZE))
+    return true;
+  return false;
 
-  const bool a = check_point_int(pCollision, x - HALFPHYSICALSIZE, y + HALFPHYSICALSIZE);
-  const bool b = check_point_int(pCollision, x + HALFPHYSICALSIZE, y + HALFPHYSICALSIZE);
-  const bool c = check_point_int(pCollision, x - HALFPHYSICALSIZE, y - HALFPHYSICALSIZE);
-  const bool d = check_point_int(pCollision, x + HALFPHYSICALSIZE, y - HALFPHYSICALSIZE);
-  return a | b | c | d;
+  // NOTE: This is better on the direct test_box_character benchmark but worse on the global benchmark
+  // since we use more memory there.
+  //
+  // const bool a = check_point_int(pCollision, x - HALFPHYSICALSIZE, y + HALFPHYSICALSIZE);
+  // const bool b = check_point_int(pCollision, x + HALFPHYSICALSIZE, y + HALFPHYSICALSIZE);
+  // const bool c = check_point_int(pCollision, x - HALFPHYSICALSIZE, y - HALFPHYSICALSIZE);
+  // const bool d = check_point_int(pCollision, x + HALFPHYSICALSIZE, y - HALFPHYSICALSIZE);
+  // return a | b | c | d;
 }
 
 void move_box(const SCollision *__restrict__ pCollision, mvec2 Pos, mvec2 Vel, mvec2 *__restrict__ pOutPos, mvec2 *__restrict__ pOutVel,

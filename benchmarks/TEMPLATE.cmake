@@ -51,12 +51,12 @@ if(NOT PGO_STAGE STREQUAL "NONE")
         endif()
 
         # create a target that runs the merge command
-        add_custom_target(pgo-merge-data
+        add_custom_target(pgo-merge-data-XXXXXX
             COMMAND ${LLVM_PROFDATA_EXECUTABLE} merge -o ${PGO_PROFILE_DIR}/default.profdata ${PGO_PROFILE_DIR}
             COMMENT "Merging PGO raw profiles..."
         )
         # make the XXXXXX target depend on the merge step
-        add_dependencies(XXXXXX pgo-merge-data)
+        add_dependencies(XXXXXX pgo-merge-data-XXXXXX)
 
     endif()
 

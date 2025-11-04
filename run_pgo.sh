@@ -80,13 +80,13 @@ run_command() {
 }
 
 # Stage 1: PGO Generate
-run_command cmake .. -DCMAKE_EXPORT_COMPILE_COMMANDS=On -DCMAKE_BUILD_TYPE=Release -DENABLE_AGGRESSIVE_OPTIM=On -DTESTS=On -DPGO_STAGE=GENERATE
-run_command make -j$(nproc) benchmark
-./tests/optimized/benchmark > /dev/null
+run_command cmake .. -DCMAKE_EXPORT_COMPILE_COMMANDS=On -DCMAKE_BUILD_TYPE=Release -DENABLE_AGGRESSIVE_OPTIM=On -DBENCHMARKS=On -DPGO_STAGE=GENERATE
+run_command make -j$(nproc) global
+./benchmarks/global/global > /dev/null
 
 # Stage 2: PGO Use
-run_command cmake .. -DCMAKE_EXPORT_COMPILE_COMMANDS=On -DCMAKE_BUILD_TYPE=Release -DENABLE_AGGRESSIVE_OPTIM=On -DTESTS=On -DPGO_STAGE=USE
-run_command make -j$(nproc) benchmark
+run_command cmake .. -DCMAKE_EXPORT_COMPILE_COMMANDS=On -DCMAKE_BUILD_TYPE=Release -DENABLE_AGGRESSIVE_OPTIM=On -DBENCHMARKS=On -DPGO_STAGE=USE
+run_command make -j$(nproc) global
 
 # Stage 3: Benchmark
 echo ""
@@ -96,12 +96,12 @@ CORES=$(($(nproc)-1))
 
 if [ "$VERBOSE" = true ]; then
   echo "Running single-threaded on core 0..."
-  taskset -c 0 ./tests/optimized/benchmark
+  taskset -c 0 ./benchmarks/global/global
   echo "Running multi-threaded on cores 0-$CORES..."
-  taskset -c 0-$CORES ./tests/optimized/benchmark --multi
+  taskset -c 0-$CORES ./benchmarks/global/global --multi
 else
-  taskset -c 0 ./tests/optimized/benchmark 2> /dev/null
-  taskset -c 0-$CORES ./tests/optimized/benchmark --multi 2> /dev/null
+  taskset -c 0 ./benchmarks/global/global 2> /dev/null
+  taskset -c 0-$CORES ./benchmarks/global/global --multi 2> /dev/null
 fi
 echo "-------------------------"
 echo ""
