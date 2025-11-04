@@ -1,3 +1,3 @@
 [submodule "libs/ddnet_map_loader"]
 	path = libs/ddnet_map_loader
-	url = https://github.com/Teero888/ddnet_maploader_c99
+	url = https://github.com/Teero888/ddnet_maploader

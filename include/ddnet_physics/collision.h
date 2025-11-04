@@ -13,11 +13,7 @@
 extern "C" {
 #endif
 
-#if __has_include("../libs/ddnet_map_loader/ddnet_map_loader.h")
-#include "../libs/ddnet_map_loader/ddnet_map_loader.h"
-#else
 #include <ddnet_map_loader.h>
-#endif
 #include "stdbool.h"
 #include "vmath.h"
 #include <stdint.h>

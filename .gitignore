@@ -11,3 +11,4 @@ perf.*
 !perf.sh
 *.gcda
 *.xml
+*I.md

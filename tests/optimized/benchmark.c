@@ -8,7 +8,7 @@
 #include <stdio.h>
 
 #define ITERATIONS 20
-#define NUM_RUNS 300
+#define NUM_RUNS 50
 #define BAR_WIDTH 50
 #define TICKS_PER_ITERATION 50000
 #define NUM_CHARACTERS 1

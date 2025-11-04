@@ -1,14 +1,10 @@
 #include "collision_tables.h"
 #include "limits.h"
 #include <assert.h>
+#include <ddnet_map_loader.h>
 #include <ddnet_physics/collision.h>
 #include <ddnet_physics/gamecore.h>
 #include <ddnet_physics/vmath.h>
-#if __has_include("../libs/ddnet_map_loader/ddnet_map_loader.h")
-#include "../libs/ddnet_map_loader/ddnet_map_loader.h"
-#else
-#include <ddnet_map_loader.h>
-#endif
 #include <float.h>
 #include <immintrin.h>
 #if defined(_MSC_VER) && !defined(__clang__)
