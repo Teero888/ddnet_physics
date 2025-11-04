@@ -68,32 +68,33 @@ function(add_c_flag_if_linker_supported VARIABLE FLAG)
   endif()
 endfunction()
 
-# Include directories
+# include directories
 target_include_directories(ddnet_physics PUBLIC include)
 
-# Default compiler options
+# default compiler options
 add_c_flag_if_compiler_supported(BASE_C_FLAGS -Wall)
 add_c_flag_if_compiler_supported(BASE_C_FLAGS -msse4.2)
 add_c_flag_if_compiler_supported(BASE_C_FLAGS -mavx)
 add_c_flag_if_compiler_supported(BASE_C_FLAGS -mavx2)
+add_c_flag_if_compiler_supported(BASE_C_FLAGS -ffast-math)
 add_c_flag_if_compiler_supported(BASE_C_FLAGS -mfma)
+add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -g)
 target_compile_options(ddnet_physics PRIVATE ${BASE_C_FLAGS})
 
-# Define debug and optimized configurations
+# debug and optimized configurations
 add_c_flag_if_linker_supported(DEBUG_C_FLAGS -fsanitize=address,undefined)
-add_c_flag_if_compiler_supported(DEBUG_C_FLAGS -g)
-add_c_flag_if_compiler_supported(DEBUG_C_FLAGS -ffast-math)
-string (REPLACE ";" " " DEBUG_C_FLAGS "${CMAKE_C_FLAGS_DEBUG}")
 
-add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -g)
 add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -O3)
-add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -ffast-math)
 add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -funroll-loops)
 add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -mfpmath=sse)
 add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -fomit-frame-pointer)
 add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -fno-trapping-math)
 add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -fno-signed-zeros)
-string (REPLACE ";" " " RELEASE_C_FLAGS "${CMAKE_C_FLAGS_RELEASE}")
+
+target_compile_options(ddnet_physics PRIVATE
+    $<$<CONFIG:DEBUG>:${DEBUG_C_FLAGS}>
+    $<$<CONFIG:RELEASE>:${RELEASE_C_FLAGS}>
+)
 
 # Aggressive optimizations if enabled
 if(ENABLE_AGGRESSIVE_OPTIM)
