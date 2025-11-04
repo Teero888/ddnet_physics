@@ -2,13 +2,13 @@
 #include <ddnet_physics/collision.h>
 #include <ddnet_physics/vmath.h>
 #include <limits.h>
-#include <math.h>
 #include <omp.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #define ITERATIONS 3000
-#define TICKS_PER_ITERATION 3000
+#define TICKS_PER_ITERATION 30000
 #define TOTAL_TICKS (ITERATIONS * TICKS_PER_ITERATION)
 #define NUM_RUNS 10
 
@@ -59,8 +59,8 @@ int main(int argc, char *argv[]) {
   for (int run = 0; run < NUM_RUNS; run++) {
     double StartTime, ElapsedTime;
     unsigned int run_seed = global_seed ^ (run * 0x9E3779B9u);
-    // We use total_hits to ensure the compiler doesn't optimize away the function call
-    unsigned long long total_hits = 0;
+    // so compiler doesn't optimize away the function call
+    uint64_t total_hits = 0;
 
     if (use_multi_threaded) {
       StartTime = omp_get_wtime();
@@ -68,11 +68,8 @@ int main(int argc, char *argv[]) {
       for (int i = 0; i < ITERATIONS; ++i) {
         unsigned int local_seed = run_seed ^ i;
         for (int t = 0; t < TICKS_PER_ITERATION; ++t) {
-          // Generate synthetic random integer positions
           int x = fast_rand_range(&local_seed, min_coord, max_x);
           int y = fast_rand_range(&local_seed, min_coord, max_y);
-
-          // Sum the boolean result (0 or 1)
           total_hits += test_box_character(&Collision, x, y);
         }
       }
@@ -84,7 +81,6 @@ int main(int argc, char *argv[]) {
         for (int t = 0; t < TICKS_PER_ITERATION; ++t) {
           int x = fast_rand_range(&local_seed, min_coord, max_x);
           int y = fast_rand_range(&local_seed, min_coord, max_y);
-
           total_hits += test_box_character(&Collision, x, y);
         }
       }
@@ -97,17 +93,7 @@ int main(int argc, char *argv[]) {
   }
   printf("\n");
 
-  SStats stats = calculate_stats(aTPSValues, NUM_RUNS);
-
-  char aBuf[32];
-  char aBuff[32];
-  format_int((int)stats.mean, aBuf);
-  format_int((int)stats.stddev, aBuff);
-  printf("test_box_character calls (mean ± σ):\t%s ± %s calls/s\n", aBuf, aBuff);
-  format_int((int)stats.min, aBuf);
-  printf("Range (min … max):\t\t\t%s … ", aBuf);
-  format_int((int)stats.max, aBuf);
-  printf("%s calls/s\t%d runs\n", aBuf, NUM_RUNS);
+  PRINT_STATS(aTPSValues, NUM_RUNS)
 
   free_collision(&Collision);
   return 0;

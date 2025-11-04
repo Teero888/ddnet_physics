@@ -123,17 +123,7 @@ int main(int argc, char *argv[]) {
   }
   printf("\n");
 
-  SStats stats = calculate_stats(aTPSValues, NUM_RUNS);
-
-  char aBuf[32];
-  char aBuff[32];
-  format_int((int)stats.mean, aBuf);
-  format_int((int)stats.stddev, aBuff);
-  printf("TPS (mean ± σ):\t\t%s ± %s ticks/s\n", aBuf, aBuff);
-  format_int((int)stats.min, aBuf);
-  printf("Range (min … max):\t%s … ", aBuf);
-  format_int((int)stats.max, aBuf);
-  printf("%s ticks/s\t%d runs\n", aBuf, NUM_RUNS);
+  PRINT_STATS(aTPSValues, NUM_RUNS)
 
   wc_free(&StartWorld);
   tg_destroy(&Grid);

@@ -39,7 +39,7 @@ int main(int argc, char *argv[]) {
     printf("Error: Failed to load collision map.\n");
     return 1;
   }
-  // Map is now owned by the collision and not needed here anymore
+  // Map is owned by the collision and not needed here anymore
   (void)Map;
 
   double aTPSValues[NUM_RUNS];
@@ -90,17 +90,7 @@ int main(int argc, char *argv[]) {
   }
   printf("\n");
 
-  SStats stats = calculate_stats(aTPSValues, NUM_RUNS);
-
-  char aBuf[32];
-  char aBuff[32];
-  format_int((int)stats.mean, aBuf);
-  format_int((int)stats.stddev, aBuff);
-  printf("move_box calls (mean ± σ):\t%s ± %s calls/s\n", aBuf, aBuff);
-  format_int((int)stats.min, aBuf);
-  printf("Range (min … max):\t\t%s … ", aBuf);
-  format_int((int)stats.max, aBuf);
-  printf("%s calls/s\t%d runs\n", aBuf, NUM_RUNS);
+  PRINT_STATS(aTPSValues, NUM_RUNS)
 
   free_collision(&Collision);
   return 0;
