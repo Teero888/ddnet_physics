@@ -78,7 +78,7 @@ add_c_flag_if_compiler_supported(BASE_C_FLAGS -mavx)
 add_c_flag_if_compiler_supported(BASE_C_FLAGS -mavx2)
 add_c_flag_if_compiler_supported(BASE_C_FLAGS -ffast-math)
 add_c_flag_if_compiler_supported(BASE_C_FLAGS -mfma)
-add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -g)
+add_c_flag_if_compiler_supported(BASE_C_FLAGS -g)
 target_compile_options(ddnet_physics PRIVATE ${BASE_C_FLAGS})
 
 # debug and optimized configurations
