@@ -372,6 +372,8 @@ mvec2 prj_get_pos(SProjectile *pProj, float Time);
 SCharacterCore *wc_intersect_character(SWorldCore *pWorld, mvec2 Pos0, mvec2 Pos1, float Radius, mvec2 *pNewPos, const SCharacterCore *pNotThis,
                                        const SCharacterCore *pThisOnly);
 void wc_insert_entity(SWorldCore *pWorld, SEntity *pEnt);
+bool cc_freeze(SCharacterCore *pCore, int Seconds);
+void cc_unfreeze(SCharacterCore *pCore);
 
 #ifdef __cplusplus
 }

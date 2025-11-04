@@ -1,3 +1,4 @@
+#include "tiles.h"
 #include <assert.h>
 #include <ddnet_map_loader.h>
 #include <ddnet_physics/collision.h>
@@ -985,6 +986,94 @@ void cc_reset_pickups(SCharacterCore *pCore) {
 
 void wc_release_hooked(SWorldCore *pCore, int Id);
 
+static void cc_handle_teleport(SCharacterCore *pCore, int z) {
+  int Num = pCore->m_pCollision->m_aNumTeleOuts[z];
+  if (Num <= 0)
+    return;
+
+  pCore->m_Pos = pCore->m_pCollision->m_apTeleOuts[z][pCore->m_Input.m_TeleOut % Num];
+  cc_calc_indices(pCore);
+  if (!pCore->m_pWorld->m_pConfig->m_SvTeleportHoldHook) {
+    cc_reset_hook(pCore);
+  }
+  if (pCore->m_pWorld->m_pConfig->m_SvTeleportLoseWeapons)
+    cc_reset_pickups(pCore);
+}
+
+static void cc_handle_evil_teleport(SCharacterCore *pCore, int evilz) {
+  int Num = pCore->m_pCollision->m_aNumTeleOuts[evilz];
+  if (Num <= 0)
+    return;
+
+  pCore->m_Pos = pCore->m_pCollision->m_apTeleOuts[evilz][pCore->m_Input.m_TeleOut % Num];
+  cc_calc_indices(pCore);
+  pCore->m_Vel = vec2_init(0, 0);
+
+  if (!pCore->m_pWorld->m_pConfig->m_SvTeleportHoldHook) {
+    cc_reset_hook(pCore);
+    wc_release_hooked(pCore->m_pWorld, pCore->m_Id);
+  }
+  if (pCore->m_pWorld->m_pConfig->m_SvTeleportLoseWeapons) {
+    cc_reset_pickups(pCore);
+  }
+}
+
+static void cc_handle_check_teleport(SCharacterCore *pCore) {
+  int Num;
+  for (int k = pCore->m_TeleCheckpoint; k >= 0; k--) {
+    if ((Num = pCore->m_pCollision->m_aNumTeleCheckOuts[k])) {
+      pCore->m_Pos = pCore->m_pCollision->m_apTeleCheckOuts[k][pCore->m_Input.m_TeleOut % Num];
+      cc_calc_indices(pCore);
+
+      if (!pCore->m_pWorld->m_pConfig->m_SvTeleportHoldHook) {
+        cc_reset_hook(pCore);
+      }
+      return;
+    }
+  }
+
+  // fallback to regular spawn
+  mvec2 SpawnPos;
+  if (wc_next_spawn(pCore->m_pWorld, &SpawnPos, pCore->m_Id)) {
+    pCore->m_Pos = SpawnPos;
+    cc_calc_indices(pCore);
+
+    if (!pCore->m_pWorld->m_pConfig->m_SvTeleportHoldHook) {
+      cc_reset_hook(pCore);
+    }
+  }
+}
+
+static void cc_handle_check_evil_teleport(SCharacterCore *pCore) {
+  int Num;
+  for (int k = pCore->m_TeleCheckpoint; k >= 0; k--) {
+    if ((Num = pCore->m_pCollision->m_aNumTeleCheckOuts[k])) {
+      pCore->m_Pos = pCore->m_pCollision->m_apTeleCheckOuts[k][pCore->m_Input.m_TeleOut % Num];
+      cc_calc_indices(pCore);
+      pCore->m_Vel = vec2_init(0, 0);
+
+      if (!pCore->m_pWorld->m_pConfig->m_SvTeleportHoldHook) {
+        cc_reset_hook(pCore);
+        wc_release_hooked(pCore->m_pWorld, pCore->m_Id);
+      }
+      return;
+    }
+  }
+
+  // fallback to regular spawn
+  mvec2 SpawnPos;
+  if (wc_next_spawn(pCore->m_pWorld, &SpawnPos, pCore->m_Id)) {
+    pCore->m_Pos = SpawnPos;
+    cc_calc_indices(pCore);
+    pCore->m_Vel = vec2_init(0, 0);
+
+    if (!pCore->m_pWorld->m_pConfig->m_SvTeleportHoldHook) {
+      cc_reset_hook(pCore);
+      wc_release_hooked(pCore->m_pWorld, pCore->m_Id);
+    }
+  }
+}
+
 void cc_handle_tiles(SCharacterCore *pCore, int Index) {
   int MapIndex = Index;
 
@@ -994,116 +1083,28 @@ void cc_handle_tiles(SCharacterCore *pCore, int Index) {
     pCore->m_LastBonus = false;
     return;
   }
+
   int TileIndex = get_tile_index(pCore->m_pCollision, MapIndex);
   int TileFIndex = pCore->m_pCollision->m_MapData.front_layer.data ? get_front_tile_index(pCore->m_pCollision, MapIndex) : 0;
+
+  // teleport checkpoint
   if (pCore->m_pCollision->m_MapData.tele_layer.type) {
     int TeleCheckpoint = is_tele_checkpoint(pCore->m_pCollision, MapIndex);
     if (TeleCheckpoint)
       pCore->m_TeleCheckpoint = TeleCheckpoint;
   }
 
-  // Handle start and finish
-  if ((TileIndex == TILE_START || TileFIndex == TILE_START))
-    if (pCore->m_StartTick == -1 || !pCore->m_pWorld->m_pConfig->m_SvSoloServer) {
-      pCore->m_StartTick = pCore->m_pWorld->m_GameTick;
-      pCore->m_FinishTick = -1;
-    }
-  if ((TileIndex == TILE_FINISH || TileFIndex == TILE_FINISH) && pCore->m_StartTick != -1 && pCore->m_FinishTick == -1) {
-    pCore->m_FinishTick = pCore->m_pWorld->m_GameTick;
-  }
+  // use the dispatch table for O(1) lookup
+  g_apGameTileHandlers[TileIndex](pCore);
+  // don't do it twice for the same tile
+  if (TileFIndex != TileIndex)
+    g_apGameTileHandlers[TileFIndex](pCore);
 
-  if ((TileIndex == TILE_FREEZE || TileFIndex == TILE_FREEZE) && !pCore->m_DeepFrozen) {
-    cc_freeze(pCore, pCore->m_pWorld->m_pConfig->m_SvFreezeDelay);
-  } else if ((TileIndex == TILE_UNFREEZE || TileFIndex == TILE_UNFREEZE) && !pCore->m_DeepFrozen)
-    cc_unfreeze(pCore);
-
-  if (TileIndex == TILE_DFREEZE || TileFIndex == TILE_DFREEZE)
-    pCore->m_DeepFrozen = true;
-  else if (TileIndex == TILE_DUNFREEZE || TileFIndex == TILE_DUNFREEZE)
-    pCore->m_DeepFrozen = false;
-
-  if (TileIndex == TILE_LFREEZE || TileFIndex == TILE_LFREEZE) {
-    pCore->m_LiveFrozen = true;
-  } else if (TileIndex == TILE_LUNFREEZE || TileFIndex == TILE_LUNFREEZE) {
-    pCore->m_LiveFrozen = false;
-  }
-
-  if (TileIndex == TILE_EHOOK_ENABLE || TileFIndex == TILE_EHOOK_ENABLE) {
-    pCore->m_EndlessHook = true;
-  } else if (TileIndex == TILE_EHOOK_DISABLE || TileFIndex == TILE_EHOOK_DISABLE) {
-    pCore->m_EndlessHook = false;
-  }
-
-  if (TileIndex == TILE_HIT_DISABLE || TileFIndex == TILE_HIT_DISABLE) {
-    pCore->m_HammerHitDisabled = true;
-    pCore->m_ShotgunHitDisabled = true;
-    pCore->m_GrenadeHitDisabled = true;
-    pCore->m_LaserHitDisabled = true;
-  } else if (TileIndex == TILE_HIT_ENABLE || TileFIndex == TILE_HIT_ENABLE) {
-    pCore->m_ShotgunHitDisabled = false;
-    pCore->m_GrenadeHitDisabled = false;
-    pCore->m_HammerHitDisabled = false;
-    pCore->m_LaserHitDisabled = false;
-  }
-
-  if (TileIndex == TILE_NPC_DISABLE || TileFIndex == TILE_NPC_DISABLE) {
-    pCore->m_CollisionDisabled = true;
-  } else if (TileIndex == TILE_NPC_ENABLE || TileFIndex == TILE_NPC_ENABLE) {
-    pCore->m_CollisionDisabled = false;
-  }
-
-  if ((TileIndex == TILE_NPH_DISABLE) || (TileFIndex == TILE_NPH_DISABLE)) {
-    pCore->m_HookHitDisabled = true;
-  } else if (TileIndex == TILE_NPH_ENABLE || TileFIndex == TILE_NPH_ENABLE) {
-    pCore->m_HookHitDisabled = false;
-  }
-
-  if (TileIndex == TILE_UNLIMITED_JUMPS_ENABLE || TileFIndex == TILE_UNLIMITED_JUMPS_ENABLE) {
-    pCore->m_EndlessJump = true;
-  } else if (TileIndex == TILE_UNLIMITED_JUMPS_DISABLE || TileFIndex == TILE_UNLIMITED_JUMPS_DISABLE) {
-    pCore->m_EndlessJump = false;
-  }
-
-  if (TileIndex == TILE_WALLJUMP || TileFIndex == TILE_WALLJUMP) {
-    if (vgety(pCore->m_Vel) > 0 && pCore->m_Colliding && pCore->m_LeftWall) {
-      pCore->m_LeftWall = false;
-      pCore->m_JumpedTotal = pCore->m_Jumps >= 2 ? pCore->m_Jumps - 2 : 0;
-      pCore->m_Jumped = 1;
-    }
-  }
-
-  if (TileIndex == TILE_JETPACK_ENABLE || TileFIndex == TILE_JETPACK_ENABLE) {
-    pCore->m_Jetpack = true;
-  } else if (TileIndex == TILE_JETPACK_DISABLE || TileFIndex == TILE_JETPACK_DISABLE) {
-    pCore->m_Jetpack = false;
-  }
-
-  if ((TileIndex == TILE_REFILL_JUMPS || TileFIndex == TILE_REFILL_JUMPS) && !pCore->m_LastRefillJumps) {
-    pCore->m_JumpedTotal = 0;
-    pCore->m_Jumped = 0;
+  // this logic must run after the handlers
+  if (TileIndex == TILE_REFILL_JUMPS || TileFIndex == TILE_REFILL_JUMPS)
     pCore->m_LastRefillJumps = true;
-  }
-  if (TileIndex != TILE_REFILL_JUMPS && TileFIndex != TILE_REFILL_JUMPS) {
+  else
     pCore->m_LastRefillJumps = false;
-  }
-
-  if (TileIndex == TILE_TELE_GUN_ENABLE || TileFIndex == TILE_TELE_GUN_ENABLE) {
-    pCore->m_HasTelegunGun = true;
-  } else if (TileIndex == TILE_TELE_GUN_DISABLE || TileFIndex == TILE_TELE_GUN_DISABLE) {
-    pCore->m_HasTelegunGun = false;
-  }
-
-  if (TileIndex == TILE_TELE_GRENADE_ENABLE || TileFIndex == TILE_TELE_GRENADE_ENABLE) {
-    pCore->m_HasTelegunGrenade = true;
-  } else if (TileIndex == TILE_TELE_GRENADE_DISABLE || TileFIndex == TILE_TELE_GRENADE_DISABLE) {
-    pCore->m_HasTelegunGrenade = false;
-  }
-
-  if (((TileIndex == TILE_TELE_LASER_ENABLE) || (TileFIndex == TILE_TELE_LASER_ENABLE)) && !pCore->m_HasTelegunLaser) {
-    pCore->m_HasTelegunLaser = true;
-  } else if (TileIndex == TILE_TELE_LASER_DISABLE || TileFIndex == TILE_TELE_LASER_DISABLE) {
-    pCore->m_HasTelegunLaser = false;
-  }
 
   if (vgety(pCore->m_Vel) > 0 && (pCore->m_MoveRestrictions & CANTMOVE_DOWN)) {
     pCore->m_Jumped = 0;
@@ -1111,184 +1112,46 @@ void cc_handle_tiles(SCharacterCore *pCore, int Index) {
   }
   pCore->m_Vel = clamp_vel(pCore->m_MoveRestrictions, pCore->m_Vel);
 
-  SSwitch *pSwitches = pCore->m_pWorld->m_pSwitches;
-  unsigned char Number = 0;
-  unsigned char Type = 0;
-  unsigned char Delay = 0;
+  // switch layer handling
   if (pCore->m_pCollision->m_MapData.switch_layer.type) {
-    Number = get_switch_number(pCore->m_pCollision, MapIndex);
-    Type = get_switch_type(pCore->m_pCollision, MapIndex);
-    Delay = get_switch_delay(pCore->m_pCollision, MapIndex);
-  }
-  int Tick = pCore->m_pWorld->m_GameTick;
+    unsigned char Number = get_switch_number(pCore->m_pCollision, MapIndex);
+    unsigned char Type = get_switch_type(pCore->m_pCollision, MapIndex);
+    unsigned char Delay = get_switch_delay(pCore->m_pCollision, MapIndex);
 
-  SSwitch *pSwitch = pSwitches;
-  if (pSwitch)
-    pSwitch += Number;
-  if (Type == TILE_SWITCHOPEN && Number > 0) {
-    pSwitch->m_Status = true;
-    pSwitch->m_EndTick = 0;
-    pSwitch->m_Type = TILE_SWITCHOPEN;
-    pSwitch->m_LastUpdateTick = Tick;
-  } else if (Type == TILE_SWITCHTIMEDOPEN && Number > 0) {
-    pSwitch->m_Status = true;
-    pSwitch->m_EndTick = Tick + 1 + Delay * GAME_TICK_SPEED;
-    pSwitch->m_Type = TILE_SWITCHTIMEDOPEN;
-    pSwitch->m_LastUpdateTick = Tick;
-  } else if (Type == TILE_SWITCHTIMEDCLOSE && Number > 0) {
-    pSwitch->m_Status = false;
-    pSwitch->m_EndTick = Tick + 1 + Delay * GAME_TICK_SPEED;
-    pSwitch->m_Type = TILE_SWITCHTIMEDCLOSE;
-    pSwitch->m_LastUpdateTick = Tick;
-  } else if (Type == TILE_SWITCHCLOSE && Number > 0) {
-    pSwitch->m_Status = false;
-    pSwitch->m_EndTick = 0;
-    pSwitch->m_Type = TILE_SWITCHCLOSE;
-    pSwitch->m_LastUpdateTick = Tick;
-  } else if (Type == TILE_FREEZE) {
-    if (Number == 0 || pSwitch->m_Status) {
-      cc_freeze(pCore, Delay);
-    }
-  } else if (Type == TILE_DFREEZE) {
-    if (Number == 0 || pSwitch->m_Status)
-      pCore->m_DeepFrozen = true;
-  } else if (Type == TILE_DUNFREEZE) {
-    if (Number == 0 || pSwitch->m_Status)
-      pCore->m_DeepFrozen = false;
-  } else if (Type == TILE_LFREEZE) {
-    if (Number == 0 || pSwitch->m_Status) {
-      pCore->m_LiveFrozen = true;
-    }
-  } else if (Type == TILE_LUNFREEZE) {
-    if (Number == 0 || pSwitch->m_Status) {
-      pCore->m_LiveFrozen = false;
-    }
-  } else if (Type == TILE_HIT_ENABLE && Delay == WEAPON_HAMMER) {
-    pCore->m_HammerHitDisabled = false;
-  } else if (Type == TILE_HIT_DISABLE && Delay == WEAPON_HAMMER) {
-    pCore->m_HammerHitDisabled = true;
-  } else if (Type == TILE_HIT_ENABLE && Delay == WEAPON_SHOTGUN) {
-    pCore->m_ShotgunHitDisabled = false;
-  } else if (Type == TILE_HIT_DISABLE && Delay == WEAPON_SHOTGUN) {
-    pCore->m_ShotgunHitDisabled = true;
-  } else if (Type == TILE_HIT_ENABLE && Delay == WEAPON_GRENADE) {
-    pCore->m_GrenadeHitDisabled = false;
-  } else if (Type == TILE_HIT_DISABLE && Delay == WEAPON_GRENADE) {
-    pCore->m_GrenadeHitDisabled = true;
-  } else if (Type == TILE_HIT_ENABLE && Delay == WEAPON_LASER) {
-    pCore->m_LaserHitDisabled = false;
-  } else if (Type == TILE_HIT_DISABLE && Delay == WEAPON_LASER) {
-    pCore->m_LaserHitDisabled = true;
-  } else if (Type == TILE_JUMP) {
-    int NewJumps = Delay;
-    if (NewJumps == 255) {
-      NewJumps = -1;
-    }
-    if (NewJumps != pCore->m_Jumps) {
-      pCore->m_Jumps = NewJumps;
-    }
-  } else if (Type == TILE_ADD_TIME && !pCore->m_LastPenalty) {
-    int min = Delay;
-    int sec = Number;
-    pCore->m_StartTime -= (min * 60 + sec) * GAME_TICK_SPEED;
-    pCore->m_LastPenalty = true;
-  } else if (Type == TILE_SUBTRACT_TIME && !pCore->m_LastBonus) {
-    int min = Delay;
-    int sec = Number;
-    pCore->m_StartTime += (min * 60 + sec) * GAME_TICK_SPEED;
-    if (pCore->m_StartTime > Tick)
-      pCore->m_StartTime = Tick;
-    pCore->m_LastBonus = true;
-  }
-  if (Type != TILE_ADD_TIME) {
-    pCore->m_LastPenalty = false;
-  }
-  if (Type != TILE_SUBTRACT_TIME) {
-    pCore->m_LastBonus = false;
+    // use the dispatch table for O(1) lookup
+    g_apSwitchTileHandlers[Type](pCore, Number, Delay);
+
+    // Handle state resets for bonus/penalty
+    // The handlers set the flag to true, this function resets them
+    if (Type != TILE_ADD_TIME)
+      pCore->m_LastPenalty = false;
+    if (Type != TILE_SUBTRACT_TIME)
+      pCore->m_LastBonus = false;
   }
 
+  // teleport layer handling
   if (!pCore->m_pCollision->m_MapData.tele_layer.type)
     return;
 
-  SConfig *pConfig = pCore->m_pWorld->m_pConfig;
   int z = is_teleport(pCore->m_pCollision, MapIndex);
-  int Num = pCore->m_pCollision->m_aNumTeleOuts[z];
-  if (z && Num > 0) {
-    pCore->m_Pos = pCore->m_pCollision->m_apTeleOuts[z][pCore->m_Input.m_TeleOut % Num];
-    cc_calc_indices(pCore);
-    if (!pConfig->m_SvTeleportHoldHook) {
-      cc_reset_hook(pCore);
-    }
-    if (pConfig->m_SvTeleportLoseWeapons)
-      cc_reset_pickups(pCore);
+  if (z) {
+    cc_handle_teleport(pCore, z);
     return;
   }
+
   int evilz = is_evil_teleport(pCore->m_pCollision, MapIndex);
-  Num = pCore->m_pCollision->m_aNumTeleOuts[evilz];
-  if (evilz && Num > 0) {
-    pCore->m_Pos = pCore->m_pCollision->m_apTeleOuts[evilz][pCore->m_Input.m_TeleOut % Num];
-    cc_calc_indices(pCore);
-    pCore->m_Vel = vec2_init(0, 0);
-
-    if (!pConfig->m_SvTeleportHoldHook) {
-      cc_reset_hook(pCore);
-      wc_release_hooked(pCore->m_pWorld, pCore->m_Id);
-    }
-    if (pConfig->m_SvTeleportLoseWeapons) {
-      cc_reset_pickups(pCore);
-    }
+  if (evilz) {
+    cc_handle_evil_teleport(pCore, evilz);
     return;
   }
+
   if (is_check_evil_teleport(pCore->m_pCollision, MapIndex)) {
-    for (int k = pCore->m_TeleCheckpoint; k >= 0; k--) {
-      if ((Num = pCore->m_pCollision->m_aNumTeleCheckOuts[k])) {
-        pCore->m_Pos = pCore->m_pCollision->m_apTeleCheckOuts[k][pCore->m_Input.m_TeleOut % Num];
-        cc_calc_indices(pCore);
-        pCore->m_Vel = vec2_init(0, 0);
-
-        if (!pConfig->m_SvTeleportHoldHook) {
-          cc_reset_hook(pCore);
-          wc_release_hooked(pCore->m_pWorld, pCore->m_Id);
-        }
-
-        return;
-      }
-    }
-    mvec2 SpawnPos;
-    if (wc_next_spawn(pCore->m_pWorld, &SpawnPos, pCore->m_Id)) {
-      pCore->m_Pos = SpawnPos;
-      cc_calc_indices(pCore);
-      pCore->m_Vel = vec2_init(0, 0);
-
-      if (!pConfig->m_SvTeleportHoldHook) {
-        cc_reset_hook(pCore);
-        wc_release_hooked(pCore->m_pWorld, pCore->m_Id);
-      }
-    }
+    cc_handle_check_evil_teleport(pCore);
     return;
   }
+
   if (is_check_teleport(pCore->m_pCollision, MapIndex)) {
-    for (int k = pCore->m_TeleCheckpoint; k >= 0; k--) {
-      if ((Num = pCore->m_pCollision->m_aNumTeleCheckOuts[k])) {
-        pCore->m_Pos = pCore->m_pCollision->m_apTeleCheckOuts[k][pCore->m_Input.m_TeleOut % Num];
-        cc_calc_indices(pCore);
-
-        if (!pConfig->m_SvTeleportHoldHook) {
-          cc_reset_hook(pCore);
-        }
-
-        return;
-      }
-    }
-    mvec2 SpawnPos;
-    if (wc_next_spawn(pCore->m_pWorld, &SpawnPos, pCore->m_Id)) {
-      pCore->m_Pos = SpawnPos;
-      cc_calc_indices(pCore);
-
-      if (!pConfig->m_SvTeleportHoldHook) {
-        cc_reset_hook(pCore);
-      }
-    }
+    cc_handle_check_teleport(pCore);
     return;
   }
 }

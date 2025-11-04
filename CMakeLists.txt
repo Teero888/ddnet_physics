@@ -27,6 +27,8 @@ add_library(ddnet_physics ${DDNET_PHYSICS_LIB_TYPE}
     src/collision.c
     src/collision_tables.h
     src/gamecore.c
+    src/tiles.c
+    src/tiles.h
 )
 
 include(CheckCCompilerFlag)

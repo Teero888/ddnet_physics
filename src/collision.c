@@ -1,5 +1,6 @@
 #include "collision_tables.h"
 #include "limits.h"
+#include "src/tiles.h"
 #include <assert.h>
 #include <ddnet_map_loader.h>
 #include <ddnet_physics/collision.h>
@@ -839,6 +840,8 @@ bool init_collision(SCollision *__restrict__ pCollision, map_data_t *__restrict_
     }
   }
 
+  // fill dispatch table for handle_tiles
+  cc_init_tile_handlers();
   return true;
 }
 

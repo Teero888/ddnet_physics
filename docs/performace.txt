@@ -3,7 +3,8 @@
  * Commands:
  * taskset --cpu-list 0-32 hyperfine --warmup 10 --show-output "./benchmark"
  * taskset --cpu-list 0-32 hyperfine --warmup 10 --show-output "./benchmark --multi"
- * Notes: this is with all compiler optimizations enabled except any that alter floating point behaviour e.g. -ffast-math/-Ofast
+ * ./run_pgo.sh
+ * Notes: this is with all compiler optimizations enabled, we don't care for compatibility with default ddnet physics
  */
 
 2025-04-03 Thursday W14 16:35:28.021977385{{{
@@ -108,4 +109,37 @@ Using 8 threads with OpenMP.
 TPS (mean ± σ):		42,990,158 ± 103,750 ticks/s
 Range (min … max):	42,685,475 … 43,061,237 ticks/s	10 runs
 
+}}}
+
+2025-11-04 Tuesday W45 15:57:36.492068361{{{
+> ./run_pgo.sh
+==================== CPU Information ====================
+Architecture:                            x86_64
+CPU(s):                                  8
+On-line CPU(s) list:                     0-7
+Model name:                              Intel(R) Xeon(R) CPU E3-1240 v5 @ 3.50GHz
+Thread(s) per core:                      2
+Core(s) per socket:                      4
+CPU(s) scaling MHz:                      59%
+NUMA node0 CPU(s):                       0-7
+=======================================================
+Starting PGO-optimized build and benchmark...
+To see build details, re-run with the --verbose flag.
+
+--- Benchmark Results ---
+Pinning benchmark to specific CPU cores for maximum consistency.
+Benchmarking physics with random inputs
+Mode: single-threaded
+[==================================================] 100% (Run 50/50, 0.0658s)
+TPS (mean ± σ):        14,881,467 ± 206,390 ticks/s
+Range (min … max):    14,365,530 … 15,382,232 ticks/s    50 runs
+Benchmarking physics with random inputs
+Mode: multi-threaded
+Using 8 threads with OpenMP.
+[==================================================] 100% (Run 50/50, 0.0183s)
+TPS (mean ± σ):        52,939,543 ± 2,273,292 ticks/s
+Range (min … max):    39,353,205 … 55,047,694 ticks/s    50 runs
+-------------------------
+
+Benchmark complete.
 }}}
