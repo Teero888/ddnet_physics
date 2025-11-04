@@ -240,7 +240,7 @@ void cc_init_tile_handlers(void) {
     g_apGameTileHandlers[i] = cc_handle_tile_empty;
     g_apSwitchTileHandlers[i] = cc_handle_switch_empty;
   }
-  
+
   g_apGameTileHandlers[TILE_START] = cc_handle_tile_start;
   g_apGameTileHandlers[TILE_FINISH] = cc_handle_tile_finish;
   g_apGameTileHandlers[TILE_FREEZE] = cc_handle_tile_freeze;

@@ -1471,7 +1471,7 @@ static bool check_point_int(const SCollision *__restrict__ pCollision, int x, in
   return pCollision->m_pTileInfos[(y >> 5) * pCollision->m_MapData.width + (x >> 5)] & INFO_ISSOLID;
 }
 
-static bool test_box_character(const SCollision *__restrict__ pCollision, int x, int y) {
+bool test_box_character(const SCollision *__restrict__ pCollision, int x, int y) {
   // NOTE: doesn't work out of bounds
   const uint32_t frac_x = x & 31;
   const uint32_t frac_y = y & 31;

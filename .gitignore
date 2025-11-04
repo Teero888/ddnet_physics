@@ -12,3 +12,4 @@ perf.*
 *.gcda
 *.xml
 *I.md
+benchmarks/*/CMakeLists.txt

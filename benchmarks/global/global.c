@@ -1,84 +1,14 @@
-#include "../data.h"
 #include "../utils.h"
 #include "ddnet_map_loader.h"
 #include <ddnet_physics/collision.h>
 #include <ddnet_physics/gamecore.h>
-#include <math.h>
 #include <omp.h>
 #include <stdio.h>
 
 #define ITERATIONS 20
 #define NUM_RUNS 50
-#define BAR_WIDTH 50
 #define TICKS_PER_ITERATION 50000
 #define NUM_CHARACTERS 1
-
-typedef struct {
-  double mean;
-  double stddev;
-  double min;
-  double max;
-} SStats;
-
-// ----- FAST PRNG (xorshift32) -----
-static inline unsigned int fast_rand_u32(unsigned int *state) {
-  unsigned int x = *state;
-  x ^= x << 13;
-  x ^= x >> 17;
-  x ^= x << 5;
-  *state = x;
-  return x;
-}
-
-static inline int fast_rand_range(unsigned int *state, int min, int max) {
-  // inclusive range [min, max]
-  return min + (fast_rand_u32(state) % (max - min + 1));
-}
-
-// ----- STATS -----
-static SStats calculate_stats(double *values, int count) {
-  SStats stats = {0};
-  double sum = 0;
-  for (int i = 0; i < count; i++)
-    sum += values[i];
-  stats.mean = sum / count;
-
-  double variance = 0;
-  for (int i = 0; i < count; i++) {
-    double diff = values[i] - stats.mean;
-    variance += diff * diff;
-  }
-  variance /= count;
-  stats.stddev = sqrt(variance);
-
-  stats.min = values[0];
-  stats.max = values[0];
-  for (int i = 1; i < count; i++) {
-    if (values[i] < stats.min)
-      stats.min = values[i];
-    if (values[i] > stats.max)
-      stats.max = values[i];
-  }
-  return stats;
-}
-
-// ----- PROGRESS -----
-void print_progress(int current, int total, double elapsed_time) {
-  float progress = (float)current / total;
-  int pos = (int)(BAR_WIDTH * progress);
-
-  printf("\r[");
-  for (int i = 0; i < BAR_WIDTH; i++) {
-    if (i < pos)
-      printf("=");
-    else if (i == pos)
-      printf(">");
-    else
-      printf(" ");
-  }
-  printf("] %3.0f%% (Run %d/%d, %.4fs)", progress * 100, current, total, elapsed_time);
-  fflush(stdout);
-}
 
 void print_help(const char *prog_name) {
   printf("Usage: %s [OPTIONS]\n", prog_name);

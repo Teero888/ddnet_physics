@@ -13,9 +13,9 @@
 extern "C" {
 #endif
 
-#include <ddnet_map_loader.h>
 #include "stdbool.h"
 #include "vmath.h"
+#include <ddnet_map_loader.h>
 #include <stdint.h>
 
 enum {
@@ -31,7 +31,7 @@ enum {
 #define HALFPHYSICALSIZE 14
 #define PHYSICALSIZEVEC vec2_init(28.f, 28.f)
 #define MAP_EXPAND 200
-#define MAP_EXPAND32 (200*32)
+#define MAP_EXPAND32 (200 * 32)
 
 enum {
   INFO_ISSOLID = 1 << 0,
@@ -141,7 +141,7 @@ bool get_nearest_air_pos(SCollision *pCollision, mvec2 Pos, mvec2 PrevPos, mvec2
 int get_index(SCollision *pCollision, mvec2 PrevPos, mvec2 Pos);
 unsigned char mover_speed(SCollision *pCollision, int x, int y, mvec2 *pSpeed);
 int entity(SCollision *pCollision, int x, int y, int Layer);
-
+bool test_box_character(const SCollision *__restrict__ pCollision, int x, int y);
 #ifdef __cplusplus
 }
 #endif

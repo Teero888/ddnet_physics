@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(ddnet_physics_optimized LANGUAGES C)
+project(benchmark_XXXXXX LANGUAGES C)
 
 find_package(OpenMP REQUIRED)
 find_package(ZLIB REQUIRED)
@@ -8,19 +8,11 @@ find_package(ZLIB REQUIRED)
 set(PGO_STAGE "NONE" CACHE STRING "Set the PGO stage (NONE, GENERATE, USE)")
 set_property(CACHE PGO_STAGE PROPERTY STRINGS NONE GENERATE USE)
 
-
 # Define executables
-add_executable(benchmark benchmark.c)
-add_executable(movebox movebox.c)
+add_executable(XXXXXX XXXXXX.c)
 
 # Windows is a bitch
-target_link_libraries(benchmark PRIVATE
-    ddnet_physics
-    ddnet_map_loader
-    ZLIB::ZLIB
-    OpenMP::OpenMP_C
-)
-target_link_libraries(movebox PRIVATE
+target_link_libraries(XXXXXX PRIVATE
     ddnet_physics
     ddnet_map_loader
     ZLIB::ZLIB
@@ -28,20 +20,16 @@ target_link_libraries(movebox PRIVATE
 )
 
 if(UNIX AND NOT APPLE)
-    target_link_libraries(benchmark PRIVATE m)
-    target_link_libraries(movebox PRIVATE m)
+    target_link_libraries(XXXXXX PRIVATE m)
 endif()
 
 # Default compile options
-target_compile_options(benchmark PRIVATE -O3 -ffast-math -g -funroll-loops -mfpmath=sse -fomit-frame-pointer -fno-trapping-math -fno-signed-zeros)
-target_compile_options(movebox PRIVATE -O3 -ffast-math -g -funroll-loops -mfpmath=sse -fomit-frame-pointer -fno-trapping-math -fno-signed-zeros)
+target_compile_options(XXXXXX PRIVATE -O3 -ffast-math -g -funroll-loops -mfpmath=sse -fomit-frame-pointer -fno-trapping-math -fno-signed-zeros)
 
 # Apply aggressive optimizations if enabled
 if(ENABLE_AGGRESSIVE_OPTIM)
-    target_compile_options(benchmark PRIVATE -flto -mllvm -inline-threshold=500 -march=native -mtune=native)
-    target_compile_options(movebox PRIVATE -flto -mllvm -inline-threshold=500 -march=native -mtune=native)
-    target_link_options(benchmark PRIVATE -flto)
-    target_link_options(movebox PRIVATE -flto)
+    target_compile_options(XXXXXX PRIVATE -flto -mllvm -inline-threshold=500 -march=native -mtune=native)
+    target_link_options(XXXXXX PRIVATE -flto)
 endif()
 
 if(NOT PGO_STAGE STREQUAL "NONE")
@@ -54,7 +42,7 @@ if(NOT PGO_STAGE STREQUAL "NONE")
     elseif(PGO_STAGE STREQUAL "USE")
         message(STATUS "PGO: Compiling with profile USE.")
         set(PGO_FLAGS "-fprofile-use=${PGO_PROFILE_DIR}/default.profdata")
-        
+
         # add a custom target to merge the profraw files
         # first, find the llvm-profdata executable
         find_program(LLVM_PROFDATA_EXECUTABLE llvm-profdata)
@@ -67,19 +55,16 @@ if(NOT PGO_STAGE STREQUAL "NONE")
             COMMAND ${LLVM_PROFDATA_EXECUTABLE} merge -o ${PGO_PROFILE_DIR}/default.profdata ${PGO_PROFILE_DIR}
             COMMENT "Merging PGO raw profiles..."
         )
-        # make the benchmark target depend on the merge step
-        add_dependencies(benchmark pgo-merge-data)
+        # make the XXXXXX target depend on the merge step
+        add_dependencies(XXXXXX pgo-merge-data)
 
     endif()
 
-    # Apply the correct PGO flags to ALL relevant targets
+    # apply the correct pgo flags to target
     target_compile_options(ddnet_physics PRIVATE ${PGO_FLAGS})
-    target_compile_options(benchmark PRIVATE ${PGO_FLAGS})
-    target_link_options(benchmark PRIVATE ${PGO_FLAGS})
-    target_compile_options(movebox PRIVATE ${PGO_FLAGS})
-    target_link_options(movebox PRIVATE ${PGO_FLAGS})
+    target_compile_options(XXXXXX PRIVATE ${PGO_FLAGS})
+    target_link_options(XXXXXX PRIVATE ${PGO_FLAGS})
 endif()
 
 # Include directories
-target_include_directories(benchmark PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/libs/ddnet_map_loader)
-target_include_directories(movebox PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/libs/ddnet_map_loader)
+target_include_directories(XXXXXX PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/libs/ddnet_map_loader)
