@@ -769,7 +769,7 @@ bool init_collision(SCollision *__restrict__ pCollision, map_data_t *__restrict_
             const unsigned char *pRowBroad = pCollision->m_pTileBroadCheck + pCollision->m_pWidthLookup[iy];
             const unsigned char *pRowInfos = pCollision->m_pTileInfos + pCollision->m_pWidthLookup[iy];
             const unsigned char *pRowTele =
-                pCollision->m_MapData.tele_layer.type ? pCollision->m_MapData.tele_layer.type + pCollision->m_pWidthLookup[y] : NULL;
+                pCollision->m_MapData.tele_layer.type ? pCollision->m_MapData.tele_layer.type + pCollision->m_pWidthLookup[iy] : NULL;
             for (int ix = x; ix <= x + dx; ++ix) {
               if (pRowBroad[ix])
                 pCollision->m_pBroadIndicesBitField[Idx] |= BitIdx;
