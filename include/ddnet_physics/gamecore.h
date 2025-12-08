@@ -204,8 +204,6 @@ typedef struct CharacterCore {
   mvec2 m_PrevPos;
   mvec2 m_Pos;
   mvec2 m_Vel;
-  float m_VelMag;  // for external use to avoid multiple sqrts
-  float m_VelRamp; // for external use to avoid multiple expfs
 
   uivec2 m_BlockPos;
   int m_BlockIdx;
@@ -287,11 +285,17 @@ typedef struct CharacterCore {
 
   int m_StartTick;
   int m_FinishTick;
-  int m_AttackTick; // for external animations
 
   uint8_t m_RespawnDelay;
 
-  int m_HitNum; // external use
+  // external use
+
+  int m_HitNum;
+  int m_AttackTick;  // for external animations
+  bool m_IsInFreeze; // for demo rendering, freezebars
+  float m_VelMag;  // for external use to avoid multiple sqrts
+  float m_VelRamp; // for external use to avoid multiple expfs
+  
 } SCharacterCore;
 // }}}
 

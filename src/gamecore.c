@@ -1076,6 +1076,7 @@ static void cc_handle_check_evil_teleport(SCharacterCore *pCore) {
 
 void cc_handle_tiles(SCharacterCore *pCore, int Index) {
   int MapIndex = Index;
+  pCore->m_IsInFreeze = false;
 
   if (Index < 0) {
     pCore->m_LastRefillJumps = false;
@@ -1105,6 +1106,9 @@ void cc_handle_tiles(SCharacterCore *pCore, int Index) {
     pCore->m_LastRefillJumps = true;
   else
     pCore->m_LastRefillJumps = false;
+
+  if (TileIndex == TILE_FREEZE || TileFIndex == TILE_FREEZE || TileIndex == TILE_DFREEZE || TileFIndex == TILE_DFREEZE)
+    pCore->m_IsInFreeze = true;
 
   if (vgety(pCore->m_Vel) > 0 && (pCore->m_MoveRestrictions & CANTMOVE_DOWN)) {
     pCore->m_Jumped = 0;
