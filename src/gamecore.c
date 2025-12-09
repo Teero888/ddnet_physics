@@ -1834,6 +1834,8 @@ void cc_tick(SCharacterCore *pCore) {
   pCore->m_PrevPos = pCore->m_Pos;
   if (pCore->m_HitNum > 0)
     --pCore->m_HitNum;
+
+  pCore->m_PrevFire = pCore->m_Input.m_Fire;
 }
 
 void cc_on_input(SCharacterCore *pCore, const SPlayerInput *pNewInput) {
@@ -1846,10 +1848,6 @@ void cc_on_input(SCharacterCore *pCore, const SPlayerInput *pNewInput) {
     pCore->m_Input.m_TargetY = -1;
 
   cc_do_weapon_switch(pCore);
-  if (!pCore->m_ReloadTimer)
-    cc_fire_weapon(pCore);
-
-  pCore->m_PrevFire = pCore->m_Input.m_Fire;
 }
 
 // }}}
