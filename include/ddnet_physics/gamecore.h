@@ -291,11 +291,12 @@ typedef struct CharacterCore {
   // external use
 
   int m_HitNum;
-  int m_AttackTick;  // for external animations
-  bool m_IsInFreeze; // for demo rendering, freezebars
-  float m_VelMag;  // for external use to avoid multiple sqrts
-  float m_VelRamp; // for external use to avoid multiple expfs
-  
+  int m_AttackTick;    // for external animations
+  bool m_IsInFreeze;   // for demo rendering, freezebars
+  float m_VelMag;      // for external use to avoid multiple sqrts
+  float m_VelRamp;     // for external use to avoid multiple expfs
+  mvec2 m_PrevHookPos; // for external use to render the hook line
+
 } SCharacterCore;
 // }}}
 

@@ -1296,6 +1296,7 @@ void cc_pre_tick(SCharacterCore *pCore) {
     pCore->m_Jumped &= ~1;
   }
 
+  pCore->m_PrevHookPos = pCore->m_HookPos;
   if (pCore->m_Input.m_Hook) {
     if (pCore->m_HookState == HOOK_IDLE) {
       mvec2 TargetDirection = vnormalize_nomask(vec2_init(pCore->m_Input.m_TargetX, pCore->m_Input.m_TargetY));
