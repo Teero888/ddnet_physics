@@ -786,8 +786,12 @@ void cc_tee_interact_deferred(SCharacterCore *pCore, int Id, int *pCollisions) {
       ++*pCollisions;
     }
   } else {
-    unsigned int seed = (uint32_t)((uint32_t)pCore->m_Id + (uint32_t)Id * 0x1234567) ^ (uint32_t)pCore->m_pWorld->m_GameTick;
-    pCore->m_Vel = vvadd(pCore->m_Vel, vec2_init((fast_rand(&seed) - fast_rand(&seed)) * 0.5f, (fast_rand(&seed) - fast_rand(&seed)) * 0.5f));
+    if (vgetx(pCore->m_PrevPos) == vgetx(pCore->m_Pos) && vgety(pCore->m_PrevPos) == vgety(pCore->m_Pos)) {
+      unsigned int seed = (uint32_t)((uint32_t)pCore->m_Id + (uint32_t)Id * 0x1234567) ^ (uint32_t)pCore->m_pWorld->m_GameTick;
+      pCore->m_Vel = vvadd(pCore->m_Vel, vec2_init((fast_rand(&seed) - fast_rand(&seed)) * 0.5f, (fast_rand(&seed) - fast_rand(&seed)) * 0.5f));
+    } else {
+      pCore->m_Vel = vvadd(pCore->m_Vel, vnormalize_nomask(vvsub(pCore->m_PrevPos, pCore->m_Pos)));
+    }
   }
 }
 
