@@ -2336,27 +2336,118 @@ void wc_remove_character(SWorldCore *pWorld, int CharacterId) {
   if (!pWorld || CharacterId < 0 || CharacterId >= pWorld->m_NumCharacters)
     return;
 
-  wc_clear_grid(pWorld);
-  SCharacterCore *pChars = pWorld->m_pCharacters;
-  int lastIdx = pWorld->m_NumCharacters - 1;
+  // Unlink from TeeList
+  // We do this before shifting indices so we access the correct current indices.
+  STeeLink *pLink = &pWorld->m_Accelerator.m_pTeeList[CharacterId];
+  if (pLink->m_Parent >= 0) {
+    pWorld->m_Accelerator.m_pTeeList[pLink->m_Parent].m_Child = pLink->m_Child;
+  }
+  if (pLink->m_Child >= 0) {
+    pWorld->m_Accelerator.m_pTeeList[pLink->m_Child].m_Parent = pLink->m_Parent;
+  }
 
-  if (CharacterId != lastIdx) {
-    pChars[CharacterId] = pChars[lastIdx];
-    pChars[CharacterId].m_Id = CharacterId;
+  // Update references in other characters and entities
+  for (int i = 0; i < pWorld->m_NumCharacters; ++i) {
+    if (i == CharacterId)
+      continue;
+    SCharacterCore *pChar = &pWorld->m_pCharacters[i];
+
+    // Update HookedPlayer
+    if (pChar->m_HookedPlayer == CharacterId) {
+      cc_release_hook(pChar);
+    } else if (pChar->m_HookedPlayer > CharacterId) {
+      pChar->m_HookedPlayer--;
+    }
+
+    // Update HitObjects
+    for (int j = 0; j < pChar->m_NumObjectsHit;) {
+      if (pChar->m_aHitObjects[j] == CharacterId) {
+        // Remove this hit object by shifting
+        memmove(&pChar->m_aHitObjects[j], &pChar->m_aHitObjects[j + 1], sizeof(int) * (pChar->m_NumObjectsHit - j - 1));
+        pChar->m_NumObjectsHit--;
+        // Don't increment j, check the new value at j
+      } else {
+        if (pChar->m_aHitObjects[j] > CharacterId) {
+          pChar->m_aHitObjects[j]--;
+        }
+        j++;
+      }
+    }
+  }
+
+  // Update Entity Owners
+  for (int i = 0; i < NUM_WORLD_ENTTYPES; ++i) {
+    SEntity *pEnt = pWorld->m_apFirstEntityTypes[i];
+    while (pEnt) {
+      int *pOwner = NULL;
+      if (pEnt->m_ObjType == WORLD_ENTTYPE_PROJECTILE) {
+        pOwner = &((SProjectile *)pEnt)->m_Owner;
+      } else if (pEnt->m_ObjType == WORLD_ENTTYPE_LASER) {
+        pOwner = &((SLaser *)pEnt)->m_Owner;
+      }
+
+      if (pOwner) {
+        if (*pOwner == CharacterId) {
+          *pOwner = -1;
+        } else if (*pOwner > CharacterId) {
+          (*pOwner)--;
+        }
+      }
+      pEnt = pEnt->m_pNextTypeEntity;
+    }
+  }
+
+  // Update indices in TeeList
+  // We need to adjust Parent/Child indices for everyone else because their IDs will shift.
+  for (int i = 0; i < pWorld->m_NumCharacters; ++i) {
+    if (i == CharacterId)
+      continue;
+    STeeLink *l = &pWorld->m_Accelerator.m_pTeeList[i];
+    if (l->m_Parent > CharacterId)
+      l->m_Parent--;
+    if (l->m_Child > CharacterId)
+      l->m_Child--;
+  }
+
+  // Shift arrays
+  if (CharacterId < pWorld->m_NumCharacters - 1) {
+    memmove(&pWorld->m_pCharacters[CharacterId], &pWorld->m_pCharacters[CharacterId + 1],
+            sizeof(SCharacterCore) * (pWorld->m_NumCharacters - CharacterId - 1));
+    memmove(&pWorld->m_Accelerator.m_pTeeList[CharacterId], &pWorld->m_Accelerator.m_pTeeList[CharacterId + 1],
+            sizeof(STeeLink) * (pWorld->m_NumCharacters - CharacterId - 1));
   }
 
   pWorld->m_NumCharacters--;
 
+  // Update IDs for shifted characters
+  for (int i = 0; i < pWorld->m_NumCharacters; ++i) {
+    pWorld->m_pCharacters[i].m_Id = i;
+    pWorld->m_Accelerator.m_pTeeList[i].m_TeeId = i;
+  }
+
+  // Resize or cleanup
   if (pWorld->m_NumCharacters == 0) {
     free(pWorld->m_pCharacters);
     pWorld->m_pCharacters = NULL;
+    free(pWorld->m_Accelerator.m_pTeeList);
+    pWorld->m_Accelerator.m_pTeeList = NULL;
   } else {
+    // realloc down
     SCharacterCore *pNewArray = realloc(pWorld->m_pCharacters, (size_t)pWorld->m_NumCharacters * sizeof(SCharacterCore));
-    if (pNewArray) {
+    if (pNewArray)
       pWorld->m_pCharacters = pNewArray;
-    }
-    // if realloc fails, just keep the larger buffer
+    STeeLink *pNewLinks = realloc(pWorld->m_Accelerator.m_pTeeList, (size_t)pWorld->m_NumCharacters * sizeof(STeeLink));
+    if (pNewLinks)
+      pWorld->m_Accelerator.m_pTeeList = pNewLinks;
   }
+
+  // Refresh Grid
+  // This will use the updated TeeList (with correct Parent/Child/TeeId) to rebuild m_pTeeGrid
+  wc_clear_grid(pWorld);
+  // Force hash update if needed, though wc_clear_grid is usually called when hash changes.
+  // We manually cleared it, so it is consistent with current state.
+  pWorld->m_Accelerator.hash = ((uint64_t)rand() << 32) | rand();
+  pWorld->m_Accelerator.m_pGrid->hash = pWorld->m_Accelerator.hash;
 }
 
 void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner) {
