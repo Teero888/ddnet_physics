@@ -1492,11 +1492,19 @@ void cc_pre_tick(SCharacterCore *pCore) {
         }
 
         if (tMaxX < tMaxY) {
-          tMaxX += tDeltaX;
-          CurrentX += StepX;
+          if (CurrentX != EndX) {
+            tMaxX += tDeltaX;
+            CurrentX += StepX;
+          } else {
+            tMaxX = FLT_MAX;
+          }
         } else {
-          tMaxY += tDeltaY;
-          CurrentY += StepY;
+          if (CurrentY != EndY) {
+            tMaxY += tDeltaY;
+            CurrentY += StepY;
+          } else {
+            tMaxY = FLT_MAX;
+          }
         }
       }
 
