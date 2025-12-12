@@ -1737,6 +1737,14 @@ void cc_fire_weapon(SCharacterCore *pCore) {
         if (pTarget == pCore || pTarget->m_Solo)
           continue;
 
+        if (pCore->m_pWorld->eff_hammer) {
+          if (vlength(vvsub(pTarget->m_Pos, ProjStartPos)) > 0.0f)
+            pCore->m_pWorld->eff_hammer(pTarget->m_Pos - vfmul(vnormalize(vvsub(pTarget->m_Pos, ProjStartPos)), HALFPHYSICALSIZE),
+                                        pCore->m_pWorld->user_data);
+          else
+            pCore->m_pWorld->eff_hammer(ProjStartPos, pCore->m_pWorld->user_data);
+        }
+
         mvec2 Dir;
         if (vsqdistance(pTarget->m_Pos, pCore->m_Pos) > 0.0f)
           Dir = vnormalize(vvsub(pTarget->m_Pos, pCore->m_Pos));

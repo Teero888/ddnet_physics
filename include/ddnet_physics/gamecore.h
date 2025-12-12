@@ -353,6 +353,13 @@ typedef struct WorldCore {
   SSwitch *m_pSwitches;
 
   int m_GameTick;
+
+  // external use
+
+  // these get called so someone constructing a demo for example can capture these without meddling with the physics or recalculating them
+  void *user_data;
+  void (*eff_hammer)(mvec2 pos, void *user_data);
+
 } SWorldCore;
 
 // }}}
