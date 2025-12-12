@@ -1,4 +1,5 @@
-#include "src/tiles.h"
+#include "tiles.h"
+#include <ddnet_map_loader.h>
 #include <ddnet_physics/collision.h>
 #include <ddnet_physics/gamecore.h>
 
@@ -60,8 +61,10 @@ static void cc_handle_tile_npc_disable(SCharacterCore *pCore) { pCore->m_Collisi
 static void cc_handle_tile_npc_enable(SCharacterCore *pCore) { pCore->m_CollisionDisabled = false; }
 static void cc_handle_tile_nph_disable(SCharacterCore *pCore) { pCore->m_HookHitDisabled = true; }
 static void cc_handle_tile_nph_enable(SCharacterCore *pCore) { pCore->m_HookHitDisabled = false; }
-static void cc_handle_tile_jumps_enable(SCharacterCore *pCore) { pCore->m_EndlessJump = true; }
+static void cc_handle_tile_solo_disable(SCharacterCore *pCore) { pCore->m_Solo = false; }
+static void cc_handle_tile_solo_enable(SCharacterCore *pCore) { pCore->m_Solo = true; }
 static void cc_handle_tile_jumps_disable(SCharacterCore *pCore) { pCore->m_EndlessJump = false; }
+static void cc_handle_tile_jumps_enable(SCharacterCore *pCore) { pCore->m_EndlessJump = true; }
 
 static void cc_handle_tile_walljump(SCharacterCore *pCore) {
   if (vgety(pCore->m_Vel) > 0 && pCore->m_Colliding && pCore->m_LeftWall) {
@@ -257,6 +260,8 @@ void cc_init_tile_handlers(void) {
   g_apGameTileHandlers[TILE_NPC_ENABLE] = cc_handle_tile_npc_enable;
   g_apGameTileHandlers[TILE_NPH_DISABLE] = cc_handle_tile_nph_disable;
   g_apGameTileHandlers[TILE_NPH_ENABLE] = cc_handle_tile_nph_enable;
+  g_apGameTileHandlers[TILE_SOLO_ENABLE] = cc_handle_tile_solo_enable;
+  g_apGameTileHandlers[TILE_SOLO_DISABLE] = cc_handle_tile_solo_disable;
   g_apGameTileHandlers[TILE_UNLIMITED_JUMPS_ENABLE] = cc_handle_tile_jumps_enable;
   g_apGameTileHandlers[TILE_UNLIMITED_JUMPS_DISABLE] = cc_handle_tile_jumps_disable;
   g_apGameTileHandlers[TILE_WALLJUMP] = cc_handle_tile_walljump;
@@ -269,7 +274,6 @@ void cc_init_tile_handlers(void) {
   g_apGameTileHandlers[TILE_TELE_GRENADE_DISABLE] = cc_handle_tile_telegun_grenade_disable;
   g_apGameTileHandlers[TILE_TELE_LASER_ENABLE] = cc_handle_tile_telegun_laser_enable;
   g_apGameTileHandlers[TILE_TELE_LASER_DISABLE] = cc_handle_tile_telegun_laser_disable;
-
   g_apSwitchTileHandlers[TILE_SWITCHOPEN] = cc_handle_switch_open;
   g_apSwitchTileHandlers[TILE_SWITCHTIMEDOPEN] = cc_handle_switch_timed_open;
   g_apSwitchTileHandlers[TILE_SWITCHTIMEDCLOSE] = cc_handle_switch_timed_close;
