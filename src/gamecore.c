@@ -1238,7 +1238,7 @@ void cc_ddrace_postcore_tick(SCharacterCore *pCore) {
 
     cc_handle_tiles(pCore, y * Width + x);
     while (x != ex || y != ey) {
-      if (tMaxX < tMaxY) {
+      if (x != ex && (y == ey || tMaxX < tMaxY)) {
         tMaxX += tDeltaX;
         x += StepX;
       } else {
