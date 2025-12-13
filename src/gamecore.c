@@ -1716,7 +1716,7 @@ void cc_fire_weapon(SCharacterCore *pCore) {
     return;
   }
 
-  pCore->m_AttackTick = pCore->m_pWorld->m_GameTick;
+  pCore->m_AttackTick = pCore->m_pWorld->m_GameTick + 1; // cc_fire_weapon is called on on_input before the tick is increased
 
   switch (pCore->m_ActiveWeapon) {
   case WEAPON_HAMMER: {
@@ -1764,6 +1764,56 @@ void cc_fire_weapon(SCharacterCore *pCore) {
         Hits++;
       }
     }
+    /*if (pCore->m_pWorld->m_NumCharacters > 1) {
+      for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+          int Idx = (((int)vgety(ProjStartPos) >> 5) + dx) * pCore->m_pCollision->m_MapData.width + (((int)vgetx(ProjStartPos) >> 5) + dy);
+          Idx = iclamp(Idx, 0, pCore->m_pCollision->m_MapData.width * pCore->m_pCollision->m_MapData.height - 1);
+          int Id = pCore->m_pWorld->m_Accelerator.m_pGrid->m_pTeeGrid[Idx];
+          while (Id >= 0) {
+            if (pCore->m_Id == Id) {
+              Id = pCore->m_pWorld->m_Accelerator.m_pTeeList[Id].m_Child;
+              continue;
+            }
+
+            if (vdistance(pCore->m_pWorld->m_pCharacters[Id].m_Pos, ProjStartPos) < HALFPHYSICALSIZE + PHYSICALSIZE) {
+              SCharacterCore *pTarget = &pCore->m_pWorld->m_pCharacters[Id];
+
+              if (pTarget == pCore || pTarget->m_Solo)
+                continue;
+
+              if (pCore->m_pWorld->eff_hammer) {
+                if (vlength(vvsub(pTarget->m_Pos, ProjStartPos)) > 0.0f)
+                  pCore->m_pWorld->eff_hammer(vvsub(pTarget->m_Pos, vfmul(vnormalize(vvsub(pTarget->m_Pos, ProjStartPos)), HALFPHYSICALSIZE)),
+                                              pCore->m_pWorld->user_data);
+                else
+                  pCore->m_pWorld->eff_hammer(ProjStartPos, pCore->m_pWorld->user_data);
+              }
+
+              mvec2 Dir;
+              if (vsqdistance(pTarget->m_Pos, pCore->m_Pos) > 0.0f)
+                Dir = vnormalize(vvsub(pTarget->m_Pos, pCore->m_Pos));
+              else
+                Dir = vec2_init(0.f, -1.f);
+
+              float Strength = pCore->m_pTuning->m_HammerStrength;
+
+              mvec2 Temp = vvadd(pTarget->m_Vel, vfmul(vnormalize(vvadd(Dir, vec2_init(0.f, -1.1f))), 10.0f));
+              Temp = vvsub(clamp_vel(pTarget->m_MoveRestrictions, Temp), pTarget->m_Vel);
+
+              mvec2 Force = vfmul(vvadd(vec2_init(0.f, -1.0f), Temp), Strength);
+
+              cc_take_damage(pTarget, Force);
+              cc_unfreeze(pTarget);
+
+              Hits++;
+            }
+
+            Id = pCore->m_pWorld->m_Accelerator.m_pTeeList[Id].m_Child;
+          }
+        }
+      }
+    }*/
 
     // if we Hit anything, we have to wait for the reload
     if (Hits) {
@@ -1835,8 +1885,6 @@ void cc_handle_weapons(SCharacterCore *pCore) {
     --pCore->m_ReloadTimer;
     return;
   }
-  if (!pCore->m_ReloadTimer)
-    cc_fire_weapon(pCore);
 }
 
 void cc_tick(SCharacterCore *pCore) {
@@ -1867,6 +1915,7 @@ void cc_on_input(SCharacterCore *pCore, const SPlayerInput *pNewInput) {
     pCore->m_Input.m_TargetY = -1;
 
   cc_do_weapon_switch(pCore);
+  cc_fire_weapon(pCore);
 }
 
 // }}}
