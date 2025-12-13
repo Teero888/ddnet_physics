@@ -24,7 +24,7 @@ if(UNIX AND NOT APPLE)
 endif()
 
 # Default compile options
-target_compile_options(XXXXXX PRIVATE -O3 -ffast-math -g -funroll-loops -mfpmath=sse -fomit-frame-pointer -fno-trapping-math -fno-signed-zeros)
+target_compile_options(XXXXXX PRIVATE -O3 -g -funroll-loops -mfpmath=sse -fomit-frame-pointer -fno-trapping-math -fno-signed-zeros)
 
 # Apply aggressive optimizations if enabled
 if(ENABLE_AGGRESSIVE_OPTIM)
