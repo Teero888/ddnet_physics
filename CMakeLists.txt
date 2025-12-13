@@ -110,7 +110,7 @@ endif()
 
 # Add subdirectory for ddnet_map_loader
 add_subdirectory(libs/ddnet_map_loader)
-target_link_libraries(ddnet_physics PRIVATE ddnet_map_loader)
+target_link_libraries(ddnet_physics PUBLIC ddnet_map_loader)
 if(UNIX AND NOT APPLE)
   target_link_libraries(ddnet_physics PRIVATE m)
 endif()
