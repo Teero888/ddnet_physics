@@ -1739,7 +1739,7 @@ void cc_fire_weapon(SCharacterCore *pCore) {
 
         if (pCore->m_pWorld->eff_hammer) {
           if (vlength(vvsub(pTarget->m_Pos, ProjStartPos)) > 0.0f)
-            pCore->m_pWorld->eff_hammer(pTarget->m_Pos - vfmul(vnormalize(vvsub(pTarget->m_Pos, ProjStartPos)), HALFPHYSICALSIZE),
+            pCore->m_pWorld->eff_hammer(vvsub(pTarget->m_Pos, vfmul(vnormalize(vvsub(pTarget->m_Pos, ProjStartPos)), HALFPHYSICALSIZE)),
                                         pCore->m_pWorld->user_data);
           else
             pCore->m_pWorld->eff_hammer(ProjStartPos, pCore->m_pWorld->user_data);
