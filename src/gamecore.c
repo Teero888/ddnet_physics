@@ -391,7 +391,7 @@ void prj_tick(SProjectile *pProj) {
 
   if (Collide || (pTargetChr && (pOwnerChar ? !pOwnerChar->m_GrenadeHitDisabled
                                             : pProj->m_Base.m_pWorld->m_pConfig->m_SvHit || pProj->m_Owner == -1 || pTargetChr == pOwnerChar))) {
-    if (pProj->m_Explosive && (!pTargetChr || (pTargetChr && (pProj->m_Type == WEAPON_SHOTGUN && Collide)))) {
+    if (pProj->m_Explosive && (!pTargetChr || (pTargetChr && (!pProj->m_Freeze || (pProj->m_Type == WEAPON_SHOTGUN && Collide))))) {
       wc_create_explosion(pProj->m_Base.m_pWorld, ColPos, pProj->m_Owner);
     } else if (pProj->m_Freeze) {
       for (int i = 0; i < pProj->m_Base.m_pWorld->m_NumCharacters; ++i) {
@@ -460,7 +460,7 @@ void prj_tick(SProjectile *pProj) {
       pProj->m_Base.m_MarkedForDestroy = true;
       return;
     }
-    if (Collide && !pProj->m_Bouncing && !pProj->m_Freeze) {
+    if (!pProj->m_Bouncing && !pProj->m_Freeze) {
       pProj->m_Base.m_MarkedForDestroy = true;
       return;
     }
