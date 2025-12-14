@@ -1915,7 +1915,8 @@ void cc_on_input(SCharacterCore *pCore, const SPlayerInput *pNewInput) {
     pCore->m_Input.m_TargetY = -1;
 
   cc_do_weapon_switch(pCore);
-  cc_fire_weapon(pCore);
+  if (!pCore->m_ReloadTimer)
+    cc_fire_weapon(pCore);
 }
 
 // }}}
