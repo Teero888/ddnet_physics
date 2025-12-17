@@ -9,7 +9,7 @@ set(PGO_STAGE "NONE" CACHE STRING "Set the PGO stage (NONE, GENERATE, USE)")
 set_property(CACHE PGO_STAGE PROPERTY STRINGS NONE GENERATE USE)
 
 # Define executables
-add_executable(XXXXXX XXXXXX.c)
+add_executable(XXXXXX ${CMAKE_CURRENT_SOURCE_DIR}/XXXXXX.c)
 
 # Windows is a bitch
 target_link_libraries(XXXXXX PRIVATE

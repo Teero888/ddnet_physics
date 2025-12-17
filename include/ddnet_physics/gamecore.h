@@ -214,9 +214,8 @@ typedef struct CharacterCore {
   int m_HookTick;
   int8_t m_HookState;
 
-  unsigned char m_LastWeapon;
+  unsigned char m_LastWeapon; // only used for ninja, is only triggered when ninja is activated
   unsigned char m_ActiveWeapon;
-  unsigned char m_QueuedWeapon;
   bool m_aWeaponGot[NUM_WEAPONS];
 
   // ninja
@@ -386,6 +385,8 @@ SCharacterCore *wc_intersect_character(SWorldCore *pWorld, mvec2 Pos0, mvec2 Pos
 void wc_insert_entity(SWorldCore *pWorld, SEntity *pEnt);
 bool cc_freeze(SCharacterCore *pCore, int Seconds);
 void cc_unfreeze(SCharacterCore *pCore);
+void cc_calc_indices(SCharacterCore *pCore);
+void cc_die(SCharacterCore *pCore);
 
 #ifdef __cplusplus
 }

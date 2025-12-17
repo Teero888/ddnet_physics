@@ -1673,22 +1673,14 @@ void cc_handle_jetpack(SCharacterCore *pCore) {
 
 void cc_do_weapon_switch(SCharacterCore *pCore) {
   uint8_t WantedWeapon = imin(pCore->m_Input.m_WantedWeapon, NUM_WEAPONS - 1);
-  if (WantedWeapon != pCore->m_ActiveWeapon && pCore->m_aWeaponGot[WantedWeapon])
-    pCore->m_QueuedWeapon = WantedWeapon;
-
-  if (!pCore->m_aWeaponGot[pCore->m_QueuedWeapon] || pCore->m_ReloadTimer != 0 || pCore->m_aWeaponGot[WEAPON_NINJA])
+  if (pCore->m_ReloadTimer != 0 || !pCore->m_aWeaponGot[WantedWeapon] || pCore->m_aWeaponGot[WEAPON_NINJA])
     return;
-  pCore->m_LastWeapon = pCore->m_ActiveWeapon;
-  pCore->m_ActiveWeapon = pCore->m_QueuedWeapon;
+  pCore->m_ActiveWeapon = WantedWeapon;
 }
 
 void wc_remove_entity(SWorldCore *pWorld, SEntity *pEnt);
 
 void cc_fire_weapon(SCharacterCore *pCore) {
-  if (pCore->m_aWeaponGot[pCore->m_QueuedWeapon] && pCore->m_ReloadTimer == 0 && !pCore->m_aWeaponGot[WEAPON_NINJA]) {
-    pCore->m_LastWeapon = pCore->m_ActiveWeapon;
-    pCore->m_ActiveWeapon = pCore->m_QueuedWeapon;
-  }
   if (pCore->m_FreezeTime)
     return;
   // don't fire hammer when player is deep and sv_deepfly is disabled

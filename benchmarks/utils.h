@@ -108,7 +108,7 @@ void print_progress(int current, int total, double elapsed_time) {
   char aBuff[32];                                                                                                                                    \
   format_int((int)stats.mean, aBuf);                                                                                                                 \
   format_int((int)stats.stddev, aBuff);                                                                                                              \
-  printf("test_box_character calls (mean ± σ):\t%s ± %s calls/s\n", aBuf, aBuff);                                                                    \
+  printf("calls (mean ± σ):\t%s ± %s calls/s\n", aBuf, aBuff);                                                                                       \
   format_int((int)stats.min, aBuf);                                                                                                                  \
   printf("Range (min … max):\t\t\t%s … ", aBuf);                                                                                                     \
   format_int((int)stats.max, aBuf);                                                                                                                  \
