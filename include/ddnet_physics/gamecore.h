@@ -329,6 +329,17 @@ typedef struct {
   int m_LastUpdateTick;
 } SSwitch;
 
+typedef enum {
+  PARTICLE_TYPE_PLAYER_SPAWN,
+  PARTICLE_TYPE_PLAYER_DEATH,
+  PARTICLE_TYPE_SMOKE,
+  PARTICLE_TYPE_BULLET_TRAIL,
+  PARTICLE_TYPE_BULLET_STARS,
+  PARTICLE_TYPE_HAMMER_HIT,
+  PARTICLE_TYPE_EXPLOSION,
+  PARTICLE_TYPE_AIR_JUMP,
+} EParticleType;
+
 typedef struct WorldCore {
   SCollision *m_pCollision;
   STeeAccelerator m_Accelerator;
@@ -357,8 +368,7 @@ typedef struct WorldCore {
 
   // these get called so someone constructing a demo for example can capture these without meddling with the physics or recalculating them
   void *user_data;
-  void (*eff_hammer)(mvec2 pos, void *user_data);
-
+  void (*particle)(mvec2 pos, int type, int cid, void *user_data);
 } SWorldCore;
 
 // }}}

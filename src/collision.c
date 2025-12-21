@@ -1056,28 +1056,6 @@ static bool is_through(SCollision *pCollision, int x, int y, int OffsetX, int Of
   return pTileIdx[offpos] == TILE_THROUGH || (pFrontIdx && pFrontIdx[offpos] == TILE_THROUGH);
 }
 
-void move_point(SCollision *pCollision, mvec2 *pInoutPos, mvec2 *pInoutVel, float Elasticity) {
-  mvec2 Pos = *pInoutPos;
-  mvec2 Vel = *pInoutVel;
-  if (check_point(pCollision, vvadd(Pos, Vel))) {
-    int Affected = 0;
-    if (check_point(pCollision, vec2_init(vgetx(Pos) + vgetx(Vel), vgety(Pos)))) {
-      *pInoutVel = vsetx(*pInoutVel, vgetx(*pInoutVel) * -Elasticity);
-      Affected++;
-    }
-
-    if (check_point(pCollision, vec2_init(vgetx(Pos), vgety(Pos) + vgety(Vel)))) {
-      *pInoutVel = vsety(*pInoutVel, vgety(*pInoutVel) * -Elasticity);
-      Affected++;
-    }
-
-    if (Affected == 0)
-      *pInoutVel = vfmul(*pInoutVel, -Elasticity);
-    return;
-  }
-  *pInoutPos = vvadd(Pos, Vel);
-}
-
 bool is_hook_blocker(SCollision *pCollision, int Index, mvec2 Pos0, mvec2 Pos1) {
   unsigned char *pTileIdx = pCollision->m_MapData.game_layer.data;
   unsigned char *pTileFlgs = pCollision->m_MapData.game_layer.flags;

@@ -370,6 +370,10 @@ void prj_tick(SProjectile *pProj) {
   mvec2 CurPos = prj_get_pos(pProj, Ct);
   mvec2 ColPos;
   mvec2 NewPos;
+
+  if (pProj->m_Base.m_pWorld->particle && pProj->m_Type == WEAPON_GRENADE)
+    pProj->m_Base.m_pWorld->particle(PrevPos, PARTICLE_TYPE_SMOKE, pProj->m_Owner, pProj->m_Base.m_pWorld->user_data);
+
   if (vgetx(CurPos) < 0 || vgety(CurPos) < 0 || (int)(vgetx(CurPos) + 0.5) >> 5 >= pProj->m_Base.m_pCollision->m_MapData.width ||
       (int)(vgety(CurPos) + 0.5) >> 5 >= pProj->m_Base.m_pCollision->m_MapData.height) {
     pProj->m_Base.m_MarkedForDestroy = true;
@@ -660,16 +664,24 @@ void cc_quantize(SCharacterCore *pCore) {
   cc_calc_indices(pCore);
 }
 
+void wc_release_hooked(SWorldCore *pCore, int Id);
 void cc_die(SCharacterCore *pCore) {
   int Id = pCore->m_Id;
+  mvec2 PrevPos = pCore->m_Pos;
   cc_init(pCore, pCore->m_pWorld);
 
   mvec2 SpawnPos;
   if (wc_next_spawn(pCore->m_pWorld, &SpawnPos, Id)) {
+    if (pCore->m_pWorld->particle)
+      pCore->m_pWorld->particle(PrevPos, PARTICLE_TYPE_PLAYER_DEATH, pCore->m_Id, pCore->m_pWorld->user_data);
+    if (pCore->m_pWorld->particle)
+      pCore->m_pWorld->particle(SpawnPos, PARTICLE_TYPE_PLAYER_SPAWN, pCore->m_Id, pCore->m_pWorld->user_data);
+
     pCore->m_Pos = SpawnPos;
     pCore->m_PrevPos = SpawnPos;
     cc_calc_indices(pCore);
   }
+  wc_release_hooked(pCore->m_pWorld, Id);
 
   pCore->m_RespawnDelay = 25;
   pCore->m_Id = Id;
@@ -1290,6 +1302,9 @@ void cc_pre_tick(SCharacterCore *pCore) {
         }
         pCore->m_JumpedTotal = 0;
       } else if (!(pCore->m_Jumped & 2)) {
+        if (pCore->m_pWorld->particle)
+          pCore->m_pWorld->particle(pCore->m_Pos, PARTICLE_TYPE_AIR_JUMP, pCore->m_Id, pCore->m_pWorld->user_data);
+
         pCore->m_Vel = vsety(pCore->m_Vel, -pCore->m_pTuning->m_AirJumpImpulse);
         pCore->m_Jumped |= 3;
         pCore->m_JumpedTotal++;
@@ -1729,12 +1744,12 @@ void cc_fire_weapon(SCharacterCore *pCore) {
         if (pTarget == pCore || pTarget->m_Solo)
           continue;
 
-        if (pCore->m_pWorld->eff_hammer) {
+        if (pCore->m_pWorld->particle) {
           if (vlength(vvsub(pTarget->m_Pos, ProjStartPos)) > 0.0f)
-            pCore->m_pWorld->eff_hammer(vvsub(pTarget->m_Pos, vfmul(vnormalize(vvsub(pTarget->m_Pos, ProjStartPos)), HALFPHYSICALSIZE)),
-                                        pCore->m_pWorld->user_data);
+            pCore->m_pWorld->particle(vvsub(pTarget->m_Pos, vfmul(vnormalize(vvsub(pTarget->m_Pos, ProjStartPos)), HALFPHYSICALSIZE)),
+                                      PARTICLE_TYPE_HAMMER_HIT, pCore->m_Id, pCore->m_pWorld->user_data);
           else
-            pCore->m_pWorld->eff_hammer(ProjStartPos, pCore->m_pWorld->user_data);
+            pCore->m_pWorld->particle(ProjStartPos, PARTICLE_TYPE_HAMMER_HIT, pCore->m_Id, pCore->m_pWorld->user_data);
         }
 
         mvec2 Dir;
@@ -2368,6 +2383,9 @@ SCharacterCore *wc_add_character(SWorldCore *pWorld, int Num) {
     pChar->m_PrevPos = SpawnPos;
     cc_calc_indices(pChar);
 
+    if (pWorld->particle)
+      pWorld->particle(SpawnPos, PARTICLE_TYPE_PLAYER_SPAWN, pChar->m_Id, pWorld->user_data);
+
     // Add to grid list structure
     STeeLink *pLink = &pWorld->m_Accelerator.m_pTeeList[pChar->m_Id];
     int Idx = ((int)vgety(pChar->m_Pos) >> 5) * pChar->m_pCollision->m_MapData.width + ((int)vgetx(pChar->m_Pos) >> 5);
@@ -2514,6 +2532,9 @@ void wc_remove_character(SWorldCore *pWorld, int CharacterId) {
 void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner) {
 #define EXPLOSION_RADIUS 135.0f
 #define EXPLOSION_INNER_RADIUS 48.0f
+  if (pWorld->particle)
+    pWorld->particle(Pos, PARTICLE_TYPE_EXPLOSION, -1, pWorld->user_data);
+
   for (int i = 0; i < pWorld->m_NumCharacters; i++) {
     SCharacterCore *pChr = &pWorld->m_pCharacters[i];
     mvec2 Diff = vvsub(pChr->m_Pos, Pos);

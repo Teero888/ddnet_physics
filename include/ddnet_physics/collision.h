@@ -60,6 +60,7 @@ enum {
   POWERUP_ARMOR_LASER,
   NUM_POWERUPS
 };
+
 typedef struct Pickup {
   int8_t m_Type;
   uint8_t m_Number;
@@ -120,7 +121,6 @@ unsigned char get_front_collision_at(SCollision *pCollision, mvec2 Pos);
 unsigned char get_move_restrictions(SCollision *pCollision, void *pUser, mvec2 Pos, int Idx);
 int get_map_index(SCollision *pCollision, mvec2 Pos);
 bool check_point(SCollision *pCollision, mvec2 Pos);
-void move_point(SCollision *pCollision, mvec2 *pInoutPos, mvec2 *pInoutVel, float Elasticity);
 bool is_hook_blocker(SCollision *pCollision, int Index, mvec2 Pos0, mvec2 Pos1);
 unsigned char intersect_line_tele_hook(SCollision *__restrict__ pCollision, mvec2 Pos0, mvec2 Pos1, mvec2 *__restrict__ pOutCollision,
                                        unsigned char *__restrict__ pTeleNr);
