@@ -688,9 +688,9 @@ bool init_collision(SCollision *__restrict__ pCollision, map_data_t *__restrict_
       for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx) {
           const int dIdx = pCollision->m_pWidthLookup[iclamp(y + dy, 0, Height - 1)] + iclamp(x + dx, 0, Width - 1);
-          if (pCollision->m_pPickups[dIdx].m_Type > 0)
+          if (pCollision->m_pPickups[dIdx].m_Type >= 0)
             pCollision->m_pTileInfos[Idx] |= INFO_PICKUPNEXT;
-          if (pCollision->m_pFrontPickups[dIdx].m_Type > 0)
+          if (pCollision->m_pFrontPickups[dIdx].m_Type >= 0)
             pCollision->m_pTileInfos[Idx] |= INFO_PICKUPNEXT;
           if (pCollision->m_MapData.game_layer.data[dIdx] == TILE_DEATH ||
               (pCollision->m_MapData.front_layer.data && pCollision->m_MapData.front_layer.data[dIdx] == TILE_DEATH))
