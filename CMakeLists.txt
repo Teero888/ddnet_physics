@@ -73,15 +73,13 @@ target_include_directories(ddnet_physics PUBLIC include)
 
 # default compiler options
 add_c_flag_if_compiler_supported(BASE_C_FLAGS -Wall)
-add_c_flag_if_compiler_supported(BASE_C_FLAGS -msse4.2)
-add_c_flag_if_compiler_supported(BASE_C_FLAGS -mavx)
-add_c_flag_if_compiler_supported(BASE_C_FLAGS -mavx2)
-add_c_flag_if_compiler_supported(BASE_C_FLAGS -mfma)
+add_c_flag_if_compiler_supported(BASE_C_FLAGS -msse4.1)
+add_c_flag_if_compiler_supported(BASE_C_FLAGS -ffast-math)
 add_c_flag_if_compiler_supported(BASE_C_FLAGS -g)
 target_compile_options(ddnet_physics PRIVATE ${BASE_C_FLAGS})
 
 # debug and optimized configurations
-add_c_flag_if_linker_supported(DEBUG_C_FLAGS -fsanitize=address,undefined)
+add_c_flag_if_linker_supported(DEBUG_C_LINK_FLAGS -fsanitize=address,undefined)
 
 add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -O3)
 add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -funroll-loops)
@@ -89,6 +87,11 @@ add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -mfpmath=sse)
 add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -fomit-frame-pointer)
 add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -fno-trapping-math)
 add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -fno-signed-zeros)
+
+target_link_options(ddnet_physics PRIVATE
+    $<$<CONFIG:DEBUG>:${DEBUG_C_LINK_FLAGS}>
+    $<$<CONFIG:RELEASE>:${RELEASE_C_LINK_FLAGS}>
+)
 
 target_compile_options(ddnet_physics PRIVATE
     $<$<CONFIG:DEBUG>:${DEBUG_C_FLAGS}>
