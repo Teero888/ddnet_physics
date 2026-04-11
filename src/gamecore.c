@@ -813,7 +813,7 @@ void cc_tick_deferred(SCharacterCore *pCore) {
     for (int dy = -1; dy <= 1; ++dy) {
       for (int dx = -1; dx <= 1; ++dx) {
         // TODO: use the block idx +- 1 +- map_width
-        int Idx = (((int)vgety(pCore->m_Pos) >> 5) + dx) * pCore->m_pCollision->m_MapData.width + (((int)vgetx(pCore->m_Pos) >> 5) + dy);
+        int Idx = (((int)vgety(pCore->m_Pos) >> 5) + dy) * pCore->m_pCollision->m_MapData.width + (((int)vgetx(pCore->m_Pos) >> 5) + dx);
         Idx = iclamp(Idx, 0, pCore->m_pCollision->m_MapData.width * pCore->m_pCollision->m_MapData.height - 1);
         int Id = pCore->m_pWorld->m_Accelerator.m_pGrid->m_pTeeGrid[Idx];
         while (Id >= 0) {
