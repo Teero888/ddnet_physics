@@ -1030,7 +1030,7 @@ static void through_offset(mvec2 Pos0, mvec2 Pos1, int *__restrict__ pOffsetX, i
 }
 
 static bool is_through(SCollision *pCollision, int x, int y, int OffsetX, int OffsetY, mvec2 Pos0, mvec2 Pos1) {
-  if (x < 0 || y < 0 || x >= pCollision->m_MapData.width * 32 || y >= pCollision->m_MapData.width * 32)
+  if (x < 0 || y < 0 || x >= pCollision->m_MapData.width * 32 || y >= pCollision->m_MapData.height * 32)
     return false;
   int pos = get_pure_map_index(pCollision, vec2_init(x, y));
   unsigned char *pFrontIdx = pCollision->m_MapData.front_layer.data;
