@@ -43,7 +43,8 @@ static bool tile_exists_next(SCollision *pCollision, int Index) {
       ((pTileIdx[TileOnTheRight] == TILE_STOPS || pTileIdx[TileOnTheLeft] == TILE_STOPS)))
     return true;
   if (pTileIdx[TileBelow] == TILE_STOPA || pTileIdx[TileAbove] == TILE_STOPA ||
-      ((pTileIdx[TileBelow] == TILE_STOPS || pTileIdx[TileAbove] == TILE_STOPS) && pTileFlgs[TileBelow] | ROTATION_180 | ROTATION_0))
+      ((pTileIdx[TileBelow] == TILE_STOPS || pTileIdx[TileAbove] == TILE_STOPS) &&
+       (pTileFlgs[TileBelow] == ROTATION_180 || pTileFlgs[TileBelow] == ROTATION_0)))
     return true;
 
   if (pFrontIdx) {
@@ -51,7 +52,8 @@ static bool tile_exists_next(SCollision *pCollision, int Index) {
         ((pFrontIdx[TileOnTheRight] == TILE_STOPS || pFrontIdx[TileOnTheLeft] == TILE_STOPS)))
       return true;
     if (pFrontIdx[TileBelow] == TILE_STOPA || pFrontIdx[TileAbove] == TILE_STOPA ||
-        ((pFrontIdx[TileBelow] == TILE_STOPS || pFrontIdx[TileAbove] == TILE_STOPS) && pFrontFlgs[TileBelow] | ROTATION_180 | ROTATION_0))
+        ((pFrontIdx[TileBelow] == TILE_STOPS || pFrontIdx[TileAbove] == TILE_STOPS) &&
+         (pFrontFlgs[TileBelow] == ROTATION_180 || pFrontFlgs[TileBelow] == ROTATION_0)))
       return true;
     if ((pFrontIdx[TileOnTheRight] == TILE_STOP && pFrontFlgs[TileOnTheRight] == ROTATION_270) ||
         (pFrontIdx[TileOnTheLeft] == TILE_STOP && pFrontFlgs[TileOnTheLeft] == ROTATION_90))
@@ -65,7 +67,8 @@ static bool tile_exists_next(SCollision *pCollision, int Index) {
         ((pDoorIdx[TileOnTheRight] == TILE_STOPS || pDoorIdx[TileOnTheLeft] == TILE_STOPS)))
       return true;
     if (pDoorIdx[TileBelow] == TILE_STOPA || pDoorIdx[TileAbove] == TILE_STOPA ||
-        ((pDoorIdx[TileBelow] == TILE_STOPS || pDoorIdx[TileAbove] == TILE_STOPS) && pDoorFlgs[TileBelow] | ROTATION_180 | ROTATION_0))
+        ((pDoorIdx[TileBelow] == TILE_STOPS || pDoorIdx[TileAbove] == TILE_STOPS) &&
+         (pDoorFlgs[TileBelow] == ROTATION_180 || pDoorFlgs[TileBelow] == ROTATION_0)))
       return true;
     if ((pDoorIdx[TileOnTheRight] == TILE_STOP && pDoorFlgs[TileOnTheRight] == ROTATION_270) ||
         (pDoorIdx[TileOnTheLeft] == TILE_STOP && pDoorFlgs[TileOnTheLeft] == ROTATION_90))
@@ -1585,7 +1588,7 @@ int get_index(SCollision *pCollision, mvec2 PrevPos, mvec2 Pos) {
 }
 
 int entity(SCollision *pCollision, int x, int y, int Layer) {
-  if ((unsigned char)x >= pCollision->m_MapData.width || (unsigned char)y >= pCollision->m_MapData.height)
+  if (x < 0 || y < 0 || x >= pCollision->m_MapData.width || y >= pCollision->m_MapData.height)
     return 0;
 
   const int Index = pCollision->m_pWidthLookup[y] + x;
