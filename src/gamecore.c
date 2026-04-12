@@ -120,7 +120,7 @@ void cc_unfreeze(SCharacterCore *pCore);
 void cc_take_damage(SCharacterCore *pCore, mvec2 Force);
 bool lsr_hit_character(SLaser *pLaser, mvec2 From, mvec2 To) {
   mvec2 At;
-  SCharacterCore *pOwnerChar = &pLaser->m_Base.m_pWorld->m_pCharacters[pLaser->m_Owner];
+  SCharacterCore *pOwnerChar = pLaser->m_Owner >= 0 ? &pLaser->m_Base.m_pWorld->m_pCharacters[pLaser->m_Owner] : NULL;
   SCharacterCore *pHit;
   bool pDontHitSelf = pLaser->m_Bounces == 0 && !pLaser->m_WasTele;
   if (pOwnerChar ? (!pOwnerChar->m_LaserHitDisabled && pLaser->m_Type == WEAPON_LASER) ||
@@ -255,7 +255,7 @@ void lsr_bounce(SLaser *pLaser) {
     }
   }
 
-  SCharacterCore *pOwnerChar = &pLaser->m_Base.m_pWorld->m_pCharacters[pLaser->m_Owner];
+  SCharacterCore *pOwnerChar = pLaser->m_Owner >= 0 ? &pLaser->m_Base.m_pWorld->m_pCharacters[pLaser->m_Owner] : NULL;
   if (pLaser->m_Energy <= 0 && !pLaser->m_TeleportCancelled && pOwnerChar && pOwnerChar->m_HasTelegunLaser && pLaser->m_Type == WEAPON_LASER) {
     mvec2 PossiblePos;
     bool Found = false;
@@ -2534,6 +2534,8 @@ void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner) {
   if (pWorld->particle)
     pWorld->particle(Pos, PARTICLE_TYPE_EXPLOSION, -1, pWorld->user_data);
 
+  SCharacterCore *pOwnerChar = Owner >= 0 ? &pWorld->m_pCharacters[Owner] : NULL;
+
   for (int i = 0; i < pWorld->m_NumCharacters; i++) {
     SCharacterCore *pChr = &pWorld->m_pCharacters[i];
     mvec2 Diff = vvsub(pChr->m_Pos, Pos);
@@ -2545,8 +2547,8 @@ void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner) {
       ForceDir = vnormalize_nomask(Diff);
     l = 1 - fclamp((l - EXPLOSION_INNER_RADIUS) / (EXPLOSION_RADIUS - EXPLOSION_INNER_RADIUS), 0.0f, 1.0f);
     float Strength;
-    if (Owner != -1)
-      Strength = pWorld->m_pCharacters[Owner].m_pTuning->m_ExplosionStrength;
+    if (pOwnerChar)
+      Strength = pOwnerChar->m_pTuning->m_ExplosionStrength;
     else
       Strength = pWorld->m_pTunings[0].m_ExplosionStrength;
 
@@ -2555,7 +2557,7 @@ void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner) {
       continue;
 
     pChr->m_HitNum += Dmg;
-    if (!pWorld->m_pCharacters[Owner].m_GrenadeHitDisabled || Owner == pChr->m_Id) {
+    if (!pOwnerChar || !pOwnerChar->m_GrenadeHitDisabled || Owner == pChr->m_Id) {
       if (pChr->m_Solo && Owner != pChr->m_Id)
         continue;
       cc_take_damage(pChr, vfmul(ForceDir, Dmg * 2));
