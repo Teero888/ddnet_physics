@@ -422,7 +422,7 @@ mvec2 prj_get_pos(SProjectile *pProj, float Time) {
 
 bool cc_freeze(SCharacterCore *pCore, int Seconds);
 
-void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner);
+void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner, int Lifespan);
 
 void prj_tick(SProjectile *pProj) {
   // Marked between ticks -- cc_on_input's kill trigger reaches cc_die outside
@@ -464,7 +464,7 @@ void prj_tick(SProjectile *pProj) {
 
   if (Collide || (pTargetChr && (pOwnerChar ? !pOwnerChar->m_GrenadeHitDisabled : pProj->m_Base.m_pWorld->m_pConfig->m_SvHit || pProj->m_Owner == -1 || pTargetChr == pOwnerChar))) {
     if (pProj->m_Explosive && (!pTargetChr || (pTargetChr && (!pProj->m_Freeze || (pProj->m_Type == WEAPON_SHOTGUN && Collide))))) {
-      wc_create_explosion(pProj->m_Base.m_pWorld, ColPos, pProj->m_Owner);
+      wc_create_explosion(pProj->m_Base.m_pWorld, ColPos, pProj->m_Owner, pProj->m_LifeSpan);
     } else if (pProj->m_Freeze) {
       for (int i = 0; i < pProj->m_Base.m_pWorld->m_NumCharacters; ++i) {
         SCharacterCore *pChr = &pProj->m_Base.m_pWorld->m_pCharacters[i];
@@ -541,7 +541,7 @@ void prj_tick(SProjectile *pProj) {
   }
   if (pProj->m_LifeSpan == -1) {
     if (pProj->m_Explosive) {
-      wc_create_explosion(pProj->m_Base.m_pWorld, ColPos, pProj->m_Owner);
+      wc_create_explosion(pProj->m_Base.m_pWorld, ColPos, pProj->m_Owner, 0);
     }
     pProj->m_Base.m_MarkedForDestroy = true;
     return;
@@ -3006,7 +3006,7 @@ void wc_remove_character(SWorldCore *pWorld, int CharacterId) {
   pWorld->m_Accelerator.m_pGrid->hash = pWorld->m_Accelerator.hash;
 }
 
-void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner) {
+void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner, int Lifespan) {
 #define EXPLOSION_RADIUS 135.0f
 #define EXPLOSION_INNER_RADIUS 48.0f
   if (pWorld->particle)
@@ -3038,7 +3038,7 @@ void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner) {
     if (!(int)Dmg)
       continue;
 
-    pChr->m_HitNum += Dmg;
+    pChr->m_HitNum += Dmg * fmax((float)(pChr->m_pTuning->m_GrenadeLifetime - Lifespan) / 20.f, 1.0f);
     if (Hit || Owner == pChr->m_Id) {
       if (pChr->m_Solo && Owner != pChr->m_Id)
         continue;
