@@ -422,7 +422,7 @@ mvec2 prj_get_pos(SProjectile *pProj, float Time) {
 
 bool cc_freeze(SCharacterCore *pCore, int Seconds);
 
-void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner, int Lifespan);
+void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner);
 
 void prj_tick(SProjectile *pProj) {
   // Marked between ticks -- cc_on_input's kill trigger reaches cc_die outside
@@ -462,9 +462,10 @@ void prj_tick(SProjectile *pProj) {
   if (pProj->m_LifeSpan > -1)
     pProj->m_LifeSpan--;
 
-  if (Collide || (pTargetChr && (pOwnerChar ? !pOwnerChar->m_GrenadeHitDisabled : pProj->m_Base.m_pWorld->m_pConfig->m_SvHit || pProj->m_Owner == -1 || pTargetChr == pOwnerChar))) {
+  if (Collide || (pTargetChr && (pOwnerChar ? !pOwnerChar->m_GrenadeHitDisabled
+                                            : pProj->m_Base.m_pWorld->m_pConfig->m_SvHit || pProj->m_Owner == -1 || pTargetChr == pOwnerChar))) {
     if (pProj->m_Explosive && (!pTargetChr || (pTargetChr && (!pProj->m_Freeze || (pProj->m_Type == WEAPON_SHOTGUN && Collide))))) {
-      wc_create_explosion(pProj->m_Base.m_pWorld, ColPos, pProj->m_Owner, pProj->m_LifeSpan);
+      wc_create_explosion(pProj->m_Base.m_pWorld, ColPos, pProj->m_Owner);
     } else if (pProj->m_Freeze) {
       for (int i = 0; i < pProj->m_Base.m_pWorld->m_NumCharacters; ++i) {
         SCharacterCore *pChr = &pProj->m_Base.m_pWorld->m_pCharacters[i];
@@ -541,7 +542,7 @@ void prj_tick(SProjectile *pProj) {
   }
   if (pProj->m_LifeSpan == -1) {
     if (pProj->m_Explosive) {
-      wc_create_explosion(pProj->m_Base.m_pWorld, ColPos, pProj->m_Owner, 0);
+      wc_create_explosion(pProj->m_Base.m_pWorld, ColPos, pProj->m_Owner);
     }
     pProj->m_Base.m_MarkedForDestroy = true;
     return;
@@ -2264,8 +2265,6 @@ void cc_tick(SCharacterCore *pCore) {
   cc_ddrace_postcore_tick(pCore);
 
   pCore->m_PrevPos = pCore->m_Pos;
-  if (pCore->m_HitNum > 0)
-    --pCore->m_HitNum;
 
   pCore->m_PrevFire = pCore->m_Input.m_Fire;
 }
@@ -2705,6 +2704,13 @@ static void wc_accelerator_tick(SWorldCore *pCore) {
 
 void wc_tick(SWorldCore *pCore) {
   ++pCore->m_GameTick;
+  const int NumCharacters = pCore->m_NumCharacters;
+  SCharacterCore *const pCharacters = pCore->m_pCharacters;
+
+  // decay hitnum before new values are added to preserve outside sources seeing it.
+  for (int i = 0; i < NumCharacters; ++i)
+    if (pCharacters[i].m_HitNum > 0)
+      --pCharacters[i].m_HitNum;
 
   // Tick entities
 
@@ -2727,8 +2733,6 @@ void wc_tick(SWorldCore *pCore) {
   // The character array is only reallocated by wc_add_character /
   // wc_remove_character, neither of which runs during a tick, so the bound and
   // the base pointer are loaded once instead of once per pass.
-  const int NumCharacters = pCore->m_NumCharacters;
-  SCharacterCore *const pCharacters = pCore->m_pCharacters;
 
   for (int i = 0; i < NumCharacters; ++i)
     cc_do_pickup(&pCharacters[i]);
@@ -3006,7 +3010,7 @@ void wc_remove_character(SWorldCore *pWorld, int CharacterId) {
   pWorld->m_Accelerator.m_pGrid->hash = pWorld->m_Accelerator.hash;
 }
 
-void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner, int Lifespan) {
+void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner) {
 #define EXPLOSION_RADIUS 135.0f
 #define EXPLOSION_INNER_RADIUS 48.0f
   if (pWorld->particle)
@@ -3038,7 +3042,7 @@ void wc_create_explosion(SWorldCore *pWorld, mvec2 Pos, int Owner, int Lifespan)
     if (!(int)Dmg)
       continue;
 
-    pChr->m_HitNum += Dmg * fmax((float)(pChr->m_pTuning->m_GrenadeLifetime - Lifespan) / 20.f, 1.0f);
+    pChr->m_HitNum += Dmg;
     if (Hit || Owner == pChr->m_Id) {
       if (pChr->m_Solo && Owner != pChr->m_Id)
         continue;
