@@ -873,15 +873,6 @@ void cc_die(SCharacterCore *pCore) {
   pCore->m_Id = Id;
 }
 
-static inline float fast_expf(float x) {
-  union {
-    float f;
-    int i;
-  } v;
-  v.i = (int)(x * (1 << 23) / 0.69314718f + 127 * (1 << 23));
-  return v.f;
-}
-
 void cc_move(SCharacterCore *pCore) {
   // The velramp test used to depend on the square root, putting ~15 cycles of
   // sqrtss latency at the head of every tick's dependency chain for a branch that
@@ -897,7 +888,7 @@ void cc_move(SCharacterCore *pCore) {
   float RampValue = 1.f;
   if (SqVel * (50.0f * 50.0f) >= VelrampStart * VelrampStart) {
     float t = pCore->m_VelMag * 50 - VelrampStart;
-    RampValue = fast_expf(-t * pCore->m_pTuning->m_VelrampValue);
+    RampValue = expf(-t * pCore->m_pTuning->m_VelrampValue);
   }
   pCore->m_VelRamp = RampValue;
 
