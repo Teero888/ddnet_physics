@@ -1246,7 +1246,7 @@ bool check_point(SCollision *pCollision, mvec2 Pos) {
 static bool check_point_idx(SCollision *pCollision, int Idx) { return pCollision->m_pTileInfos[Idx] & INFO_ISSOLID; }
 
 static void through_offset(mvec2 Pos0, mvec2 Pos1, int *__restrict__ pOffsetX, int *__restrict__ pOffsetY) {
-  static const int offsets[8][2] = {{32, 0}, {0, 32}, {-32, 0}, {0, 32}, {32, 0}, {0, -32}, {-32, 0}, {0, -32}};
+  static const int offsets[8][2] = {{0, 32}, {32, 0}, {0, -32}, {32, 0}, {0, 32}, {-32, 0}, {0, -32}, {-32, 0}};
   const float dx = vgetx(Pos0) - vgetx(Pos1);
   const float dy = vgety(Pos0) - vgety(Pos1);
   int index = ((dx < 0.0f) << 2) | ((dy < 0.0f) << 1) | ((dx >= 0.0f ? dx : -dx) > (dy >= 0.0f ? dy : -dy));
@@ -1425,9 +1425,8 @@ unsigned char intersect_line_tele_hook(SCollision *__restrict__ pCollision, mvec
       }
     }
     if (check_point_idx(pCollision, Index)) {
-      const mvec2 Pos = vvfmix(Pos0, Pos1, t);
-      if (!is_through(pCollision, (int)(vgetx(Pos) + 0.5f), (int)(vgety(Pos) + 0.5f), dx, dy, Pos0, Pos1)) {
-        *pOutCollision = Pos;
+      if (!is_through(pCollision, tx << 5, ty << 5, dx, dy, Pos0, Pos1)) {
+        *pOutCollision = vvfmix(Pos0, Pos1, t);
         return pCollision->m_MapData.game_layer.data[Index];
       }
     } else if (is_hook_blocker(pCollision, Index, Pos0, Pos1)) {
