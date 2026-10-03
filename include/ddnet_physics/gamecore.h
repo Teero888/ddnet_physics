@@ -313,6 +313,9 @@ typedef struct CharacterCore {
   bool m_DeepFrozen;
   bool m_LiveFrozen;
   bool m_FrozenLastTick;
+  // Unfrozen by a hammer while the inputs of a step were applied: it fires
+  // back at the start of wc_tick, whatever its place among the players.
+  bool m_UnfrozenByHit;
   bool m_TeleGunTeleport;
   bool m_IsBlueTeleGunTeleport;
   bool m_aGotFastcapFlag[2];
@@ -427,6 +430,8 @@ typedef struct WorldCore {
   int m_NumCharacters;
   int m_NumSwitches;
   int m_GameTick;
+  // Inside wc_tick (as opposed to applying the inputs before it).
+  bool m_InTick;
   bool m_UniqueRace; // detected from Unique Race map settings, may also be enabled by the caller
 
   // external use

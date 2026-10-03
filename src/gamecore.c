@@ -168,6 +168,7 @@ void lsr_init(SLaser *pLaser, SWorldCore *pGameWorld, int Type, int Owner, mvec2
 }
 
 void cc_unfreeze(SCharacterCore *pCore);
+static void unfreeze_by_hit(SCharacterCore *pTarget);
 bool lsr_hit_character(SLaser *pLaser, mvec2 From, mvec2 To) {
   mvec2 At;
   SCharacterCore *pOwnerChar = pLaser->m_Owner >= 0 && pLaser->m_Owner < pLaser->m_Base.m_pWorld->m_NumCharacters
@@ -195,7 +196,7 @@ bool lsr_hit_character(SLaser *pLaser, mvec2 From, mvec2 To) {
     break;
   }
   case WEAPON_LASER: {
-    cc_unfreeze(pHit);
+    unfreeze_by_hit(pHit);
     break;
   }
   default:
@@ -779,6 +780,18 @@ void cc_init(SCharacterCore *pCore, SWorldCore *pWorld) {
 void cc_set_worldcore(SCharacterCore *pCore, SWorldCore *pWorld, SCollision *pCollision) {
   pCore->m_pWorld = pWorld;
   pCore->m_pCollision = pCollision;
+}
+
+// A hammer or laser hit unfreezing a tee. While the inputs are applied (a
+// hammer, or a laser's first stretch, both happen as the weapon is fired) the
+// tee fires back with everyone else unfrozen then, at the start of wc_tick.
+// During the tick it gets its chance in its own cc_tick, as in DDNet.
+static void unfreeze_by_hit(SCharacterCore *pTarget) {
+  if (pTarget->m_FreezeTime <= 0)
+    return;
+  cc_unfreeze(pTarget);
+  if (!pTarget->m_pWorld->m_InTick)
+    pTarget->m_UnfrozenByHit = true;
 }
 
 void cc_unfreeze(SCharacterCore *pCore) {
@@ -1977,7 +1990,13 @@ void cc_do_weapon_switch(SCharacterCore *pCore) {
 
 void wc_remove_entity(SWorldCore *pWorld, SEntity *pEnt);
 
-void cc_fire_weapon(SCharacterCore *pCore) {
+// Fires the active weapon if the input asks for it. DDNet tries twice a
+// tick: when the input arrives, where a fresh press counts (Press), and in the
+// character's tick (CCharacter::HandleWeapons), where the press has been used
+// up and only holding counts: full-auto weapons, and any weapon right after
+// the tee came out of freeze (m_FrozenLastTick). BeforeTick: wc_tick has not
+// advanced m_GameTick yet, so the attack belongs to the next tick.
+static void fire_weapon(SCharacterCore *pCore, bool Press, bool BeforeTick) {
   if (pCore->m_FreezeTime)
     return;
   // don't fire hammer when player is deep and sv_deepfly is disabled
@@ -1985,7 +2004,7 @@ void cc_fire_weapon(SCharacterCore *pCore) {
     return;
 
   // check if we gonna fire
-  bool WillFire = !pCore->m_PrevFire && pCore->m_Input.m_Fire;
+  bool WillFire = Press && !pCore->m_PrevFire && pCore->m_Input.m_Fire;
   if (pCore->m_Input.m_Fire & 1) {
     if (pCore->m_ActiveWeapon >= WEAPON_SHOTGUN && pCore->m_ActiveWeapon <= WEAPON_LASER)
       WillFire = true;
@@ -2007,7 +2026,7 @@ void cc_fire_weapon(SCharacterCore *pCore) {
     return;
   }
 
-  pCore->m_AttackTick = pCore->m_pWorld->m_GameTick + 1; // cc_fire_weapon is called on on_input before the tick is increased
+  pCore->m_AttackTick = pCore->m_pWorld->m_GameTick + (BeforeTick ? 1 : 0);
 
   static const ESoundType s_aWeaponSounds[NUM_WEAPONS] = {SOUND_TYPE_HAMMER_FIRE,  SOUND_TYPE_GUN_FIRE,   SOUND_TYPE_SHOTGUN_FIRE,
                                                           SOUND_TYPE_GRENADE_FIRE, SOUND_TYPE_LASER_FIRE, SOUND_TYPE_NINJA_FIRE};
@@ -2054,7 +2073,7 @@ void cc_fire_weapon(SCharacterCore *pCore) {
         mvec2 Force = vfmul(vvadd(vec2_init(0.f, -1.0f), Temp), Strength);
 
         cc_take_damage(pTarget, Force, 3);
-        cc_unfreeze(pTarget);
+        unfreeze_by_hit(pTarget);
 
         Hits++;
       }
@@ -2099,7 +2118,7 @@ void cc_fire_weapon(SCharacterCore *pCore) {
               mvec2 Force = vfmul(vvadd(vec2_init(0.f, -1.0f), Temp), Strength);
 
               cc_take_damage(pTarget, Force, 3);
-              cc_unfreeze(pTarget);
+              unfreeze_by_hit(pTarget);
 
               Hits++;
             }
@@ -2174,6 +2193,8 @@ void cc_fire_weapon(SCharacterCore *pCore) {
   }
 }
 
+void cc_fire_weapon(SCharacterCore *pCore) { fire_weapon(pCore, true, true); }
+
 void cc_handle_weapons(SCharacterCore *pCore) {
   if (pCore->m_aWeaponGot[WEAPON_NINJA])
     cc_handle_ninja(pCore);
@@ -2183,6 +2204,8 @@ void cc_handle_weapons(SCharacterCore *pCore) {
     --pCore->m_ReloadTimer;
     return;
   }
+  // fire Weapon, if wanted (holding only; the press was handled with the input)
+  fire_weapon(pCore, false, false);
 }
 
 void cc_tick(SCharacterCore *pCore) {
@@ -2211,7 +2234,10 @@ void cc_on_input(SCharacterCore *pCore, const SPlayerInput *pNewInput) {
     pCore->m_Input.m_TargetY = -1;
 
   cc_do_weapon_switch(pCore);
-  if (!pCore->m_ReloadTimer)
+  // A tee a hammer just unfroze fires back in wc_tick, with everyone else
+  // unfrozen this step, not here: here it would only if its input came after
+  // the hammer's, so whether freeze hammer works would depend on player order.
+  if (!pCore->m_ReloadTimer && !pCore->m_UnfrozenByHit)
     cc_fire_weapon(pCore);
 }
 
@@ -3221,9 +3247,30 @@ Apply:
 // }}}
 
 void wc_tick(SWorldCore *pCore) {
-  ++pCore->m_GameTick;
   const int NumCharacters = pCore->m_NumCharacters;
   SCharacterCore *const pCharacters = pCore->m_pCharacters;
+
+  // Tees a hammer unfroze while the inputs were applied fire back now, by
+  // holding (m_FrozenLastTick), as the last part of applying the inputs. DDNet
+  // gives them that chance in their own tick, so whether they fire back with
+  // the input or with the tick, and so how hard they knock the hammerer,
+  // depends on their place among the players; here all of them fire together,
+  // before anything moves. A fire back can unfreeze another tee in turn.
+  for (bool Unfrozen = true; Unfrozen;) {
+    Unfrozen = false;
+    for (int i = 0; i < NumCharacters; ++i) {
+      SCharacterCore *pChar = &pCharacters[i];
+      if (!pChar->m_UnfrozenByHit)
+        continue;
+      pChar->m_UnfrozenByHit = false;
+      Unfrozen = true;
+      if (!pChar->m_ReloadTimer)
+        fire_weapon(pChar, false, true);
+    }
+  }
+
+  ++pCore->m_GameTick;
+  pCore->m_InTick = true;
 
   // decay hitnum before new values are added to preserve outside sources seeing it.
   for (int i = 0; i < NumCharacters; ++i)
@@ -3302,6 +3349,7 @@ void wc_tick(SWorldCore *pCore) {
       }
     }
   }
+  pCore->m_InTick = false;
 }
 
 SCharacterCore *wc_add_character(SWorldCore *pWorld, int Num) {
