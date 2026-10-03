@@ -873,7 +873,10 @@ void cc_die(SCharacterCore *pCore) {
   pCore->m_Id = Id;
 }
 
-void cc_move(SCharacterCore *pCore) {
+// Moves a tee against the walls only: *pNewPos is where the walls let it go,
+// and m_Pos is left where it was. False when it left the map and died, which
+// has put it at a spawn.
+static bool cc_move_walls(SCharacterCore *pCore, mvec2 *pNewPos) {
   // The velramp test used to depend on the square root, putting ~15 cycles of
   // sqrtss latency at the head of every tick's dependency chain for a branch that
   // is almost never taken (it needs |Vel| * 50 >= VelrampStart, i.e. |Vel| >= 11).
@@ -904,7 +907,7 @@ void cc_move(SCharacterCore *pCore) {
       _mm_or_ps(_mm_cmplt_ps(MaxNewPos, _mm_set1_ps(HALFPHYSICALSIZE + 2)), _mm_cmpge_ps(MaxNewPos, pCore->m_pCollision->m_MapMaxPos));
   if (_mm_movemask_ps(OutOfBounds) & 3) {
     cc_die(pCore);
-    return;
+    return false;
   }
 
   pCore->m_Vel = vvclamp(pCore->m_Vel, vec2_init(-4 * 32, -4 * 32), vec2_init(4 * 32, 4 * 32));
@@ -929,82 +932,19 @@ void cc_move(SCharacterCore *pCore) {
   if (RampValue != 1.f)
     pCore->m_Vel = vsetx(pCore->m_Vel, velX * (1.f / RampValue));
 
-  pCore->m_Pos = NewPos;
+  *pNewPos = NewPos;
+  return true;
 }
 
-static inline float fast_rand(unsigned int *state) {
-  unsigned int x = *state;
-  x ^= x << 13;
-  x ^= x >> 17;
-  x ^= x << 5;
-  *state = x;
-  return (x % 1000) / 1000.0f;
-}
-// static inline unsigned int ifast_rand(unsigned int *state) {
-//   unsigned int x = *state;
-//   x ^= x << 13;
-//   x ^= x >> 17;
-//   x ^= x << 5;
-//   *state = x;
-//   return x;
-// }
-
-void cc_tee_interact_deferred(SCharacterCore *pCore, int Id, int *pCollisions) {
-  SCharacterCore *pOther = &pCore->m_pWorld->m_pCharacters[Id];
-  if (pCore->m_Solo || pOther->m_Solo)
-    return;
-  if ((pCore->m_CollisionDisabled || pOther->m_CollisionDisabled || !pCore->m_pTuning->m_PlayerCollision || !pOther->m_pTuning->m_PlayerCollision))
-    return;
-
-  mvec2 Pos = pOther->m_Pos;
-  float Distance = vdistance(pCore->m_Pos, Pos);
-  if (Distance > 0) {
-    mvec2 Dir = vnormalize(vvsub(pCore->m_Pos, Pos));
-
-    if (Distance < PHYSICALSIZE * 1.25f) {
-      float a = (PHYSICALSIZE * 1.45f - Distance);
-      float Velocity = 0.5f;
-
-      if (vlength(pCore->m_Vel) > 0.0001f)
-        Velocity = 1 - (vdot(vnormalize_nomask(pCore->m_Vel), Dir) + 1) / 2;
-
-      pCore->m_Vel = vvadd(pCore->m_Vel, vfmul(Dir, a * (Velocity * 0.75f * 0.85f)));
-      ++*pCollisions;
-    }
-  } else {
-    if (vgetx(pCore->m_PrevPos) == vgetx(pCore->m_Pos) && vgety(pCore->m_PrevPos) == vgety(pCore->m_Pos)) {
-      unsigned int seed = (uint32_t)((uint32_t)pCore->m_Id + (uint32_t)Id ^ 0x1234567) ^ (uint32_t)pCore->m_pWorld->m_GameTick;
-      pCore->m_Vel = vvadd(pCore->m_Vel, vec2_init((fast_rand(&seed) - fast_rand(&seed)) * 0.5f, (fast_rand(&seed) - fast_rand(&seed)) * 0.5f));
-    } else {
-      pCore->m_Vel = vvadd(pCore->m_Vel, vnormalize_nomask(vvsub(pCore->m_PrevPos, pCore->m_Pos)));
-    }
-  }
+// A tee on its own: other tees do not block it here; wc_tick moves them all
+// together (resolve_player_blocking).
+void cc_move(SCharacterCore *pCore) {
+  mvec2 NewPos;
+  if (cc_move_walls(pCore, &NewPos))
+    pCore->m_Pos = NewPos;
 }
 
 void cc_tick_deferred(SCharacterCore *pCore) {
-  if (pCore->m_pWorld->m_NumCharacters > 1) {
-    int Num = 0;
-    for (int dy = -1; dy <= 1; ++dy) {
-      for (int dx = -1; dx <= 1; ++dx) {
-        // TODO: use the block idx +- 1 +- map_width
-        int Idx = (((int)vgety(pCore->m_Pos) >> 5) + dy) * pCore->m_pCollision->m_MapData.width + (((int)vgetx(pCore->m_Pos) >> 5) + dx);
-        Idx = iclamp(Idx, 0, pCore->m_pCollision->m_MapData.width * pCore->m_pCollision->m_MapData.height - 1);
-        int Id = pCore->m_pWorld->m_Accelerator.m_pGrid->m_pTeeGrid[Idx];
-        while (Id >= 0) {
-          if (pCore->m_Id == Id) {
-            Id = pCore->m_pWorld->m_Accelerator.m_pTeeList[Id].m_Child;
-            continue;
-          }
-          cc_tee_interact_deferred(pCore, Id, &Num);
-          Id = pCore->m_pWorld->m_Accelerator.m_pTeeList[Id].m_Child;
-          if (Num > 8)
-            goto EndCollisions;
-        }
-      }
-    }
-    // pCore->m_Vel = vvclamp(pCore->m_Vel, vec2_init(-1, -1), vec2_init(1, 1));
-  }
-EndCollisions:
   // player hooking logic
   if (pCore->m_pWorld->m_NumCharacters > 1 && pCore->m_HookedPlayer >= 0) {
     SCharacterCore *pCharCore = &pCore->m_pWorld->m_pCharacters[pCore->m_HookedPlayer];
@@ -2642,57 +2582,643 @@ static void wc_clear_grid(SWorldCore *pCore) {
   }
 }
 
+// Moves a tee's entry in the grid to the tile it is in now.
+static void accelerator_relink(SWorldCore *pCore, const SCharacterCore *pChar) {
+  STeeLink *pLink = &pCore->m_Accelerator.m_pTeeList[pChar->m_Id];
+  int PrevIdx = pLink->m_Tile;
+  int Idx = ((int)vgety(pChar->m_Pos) >> 5) * pChar->m_pCollision->m_MapData.width + ((int)vgetx(pChar->m_Pos) >> 5);
+  if (PrevIdx == Idx)
+    return;
+
+  // remove ourselves from the previous index
+  if (pLink->m_Parent >= 0) {
+    pCore->m_Accelerator.m_pTeeList[pLink->m_Parent].m_Child = pLink->m_Child;
+  }
+  if (pLink->m_Child >= 0) {
+    pCore->m_Accelerator.m_pTeeList[pLink->m_Child].m_Parent = pLink->m_Parent;
+  }
+
+  // only update grid head if we were the head
+  if (pCore->m_Accelerator.m_pGrid->m_pTeeGrid[PrevIdx] == (int32_t)pLink->m_TeeId) {
+    if (pLink->m_Child >= 0)
+      pCore->m_Accelerator.m_pGrid->m_pTeeGrid[PrevIdx] = pLink->m_Child;
+    else
+      pCore->m_Accelerator.m_pGrid->m_pTeeGrid[PrevIdx] = -1;
+  }
+
+  if (pLink->m_Parent < 0 && pLink->m_Child < 0)
+    pCore->m_Accelerator.m_pGrid->m_pTeeGrid[PrevIdx] = -1;
+
+  // add ourselves onto the current index
+  // move ourselves into the top of the list at our grid spot
+  pLink->m_Tile = Idx;
+  pLink->m_Parent = -1;
+  pLink->m_Child = -1;
+  if (pCore->m_Accelerator.m_pGrid->m_pTeeGrid[Idx] >= 0) {
+    STeeLink *pTopLink = &pCore->m_Accelerator.m_pTeeList[pCore->m_Accelerator.m_pGrid->m_pTeeGrid[Idx]];
+    if (pTopLink != pLink) {
+      pLink->m_Child = pTopLink->m_TeeId;
+      pTopLink->m_Parent = pLink->m_TeeId;
+    }
+  }
+  pCore->m_Accelerator.m_pGrid->m_pTeeGrid[Idx] = pChar->m_Id;
+}
+
 static void wc_accelerator_tick(SWorldCore *pCore) {
   if (pCore->m_Accelerator.hash != pCore->m_Accelerator.m_pGrid->hash) {
     wc_clear_grid(pCore);
     pCore->m_Accelerator.m_pGrid->hash = pCore->m_Accelerator.hash;
   }
+  for (int i = 0; i < pCore->m_NumCharacters; ++i)
+    accelerator_relink(pCore, &pCore->m_pCharacters[i]);
+}
 
-  // set up accelerator
-  for (int i = 0; i < pCore->m_NumCharacters; ++i) {
-    SCharacterCore *pChar = &pCore->m_pCharacters[i];
-    STeeLink *pLink = &pCore->m_Accelerator.m_pTeeList[pChar->m_Id];
-    int PrevIdx = pLink->m_Tile;
-    int Idx = ((int)vgety(pChar->m_Pos) >> 5) * pChar->m_pCollision->m_MapData.width + ((int)vgetx(pChar->m_Pos) >> 5);
-    if (PrevIdx == Idx)
-      continue;
+// Player collision {{{
+//
+// Every tee is treated the same: no result depends on which tee is handled
+// first or on player ids. Each pass reads state the pass itself does not
+// change; contributions are combined either in integers (whose sums do not
+// depend on order) or as a minimum, and simultaneous events are settled
+// together.
+//
+// Tees that may touch are found with a spatial hash rebuilt every tick: each
+// tee's box goes into every 64px cell it covers, the entries are radix sorted
+// by cell, and two tees sharing a cell are a candidate pair. A pair sharing
+// several cells is reported only from the cell holding the top left corner of
+// where their boxes overlap.
 
-    pLink = &pCore->m_Accelerator.m_pTeeList[pChar->m_Id];
+// Whether a tee collides with other tees at all.
+static inline bool collides_with_tees(const SCharacterCore *pCore) {
+  return !pCore->m_Solo && !pCore->m_CollisionDisabled && pCore->m_pTuning->m_PlayerCollision;
+}
 
-    // remove ourselves from the previous index
-    if (pLink->m_Parent >= 0) {
-      pCore->m_Accelerator.m_pTeeList[pLink->m_Parent].m_Child = pLink->m_Child;
-    }
-    if (pLink->m_Child >= 0) {
-      pCore->m_Accelerator.m_pTeeList[pLink->m_Child].m_Parent = pLink->m_Parent;
-    }
+#define COLLIDE_CELL_SHIFT 6 // 64px cells
 
-    // only update grid head if we were the head
-    if (pCore->m_Accelerator.m_pGrid->m_pTeeGrid[PrevIdx] == (int32_t)pLink->m_TeeId) {
-      if (pLink->m_Child >= 0)
-        pCore->m_Accelerator.m_pGrid->m_pTeeGrid[PrevIdx] = pLink->m_Child;
-      else
-        pCore->m_Accelerator.m_pGrid->m_pTeeGrid[PrevIdx] = -1;
-    }
+typedef struct {
+  float m_MinX, m_MaxX, m_MinY, m_MaxY;
+} STeeBox;
 
-    if (pLink->m_Parent < 0 && pLink->m_Child < 0)
-      pCore->m_Accelerator.m_pGrid->m_pTeeGrid[PrevIdx] = -1;
+typedef struct {
+  uint32_t m_Cell; // cell y << 16 | cell x
+  int32_t m_Tee;
+} SCellEntry;
 
-    // add ourselves onto the current index
-    // move ourselves into the top of the list at our grid spot
-    pLink->m_Tile = Idx;
-    pLink->m_Parent = -1;
-    pLink->m_Child = -1;
-    if (pCore->m_Accelerator.m_pGrid->m_pTeeGrid[Idx] >= 0) {
-      STeeLink *pTopLink = &pCore->m_Accelerator.m_pTeeList[pCore->m_Accelerator.m_pGrid->m_pTeeGrid[Idx]];
-      if (pTopLink != pLink) {
-        pLink->m_Child = pTopLink->m_TeeId;
-        pTopLink->m_Parent = pLink->m_TeeId;
+typedef struct {
+  int m_A, m_B;
+  float m_R2;    // squared distance they may not come closer than
+  float m_Time;  // when they meet, 2 for never
+  int m_Version; // bumped whenever m_Time is solved again
+} STeePair;
+
+typedef struct {
+  float m_Time;
+  int m_Pair, m_Version;
+} SPairEvent;
+
+// Tees that start at the same spot and are headed for the same one behave the
+// same while blocking, so they block (and are blocked) as one.
+typedef struct {
+  float m_X, m_Y, m_TX, m_TY;
+  float m_Stop;
+} SBlocker;
+
+// Per group of tees at one spot: the moments of its contacts, S = sum a d and
+// M = sum a d d^T, and the deepest contact.
+typedef struct {
+  int64_t m_SX, m_SY, m_MXX, m_MXY, m_MYY;
+  float m_Deepest;
+  int m_Count;
+  float m_X, m_Y;
+} SSpotGroup;
+
+// Per-thread scratch for the collision passes, grown as needed.
+static THREAD_LOCAL struct {
+  STeeBox *m_pBoxes;
+  int m_BoxCap;
+  SCellEntry *m_pCells, *m_pCellsTmp;
+  int m_CellCap, m_CellTmpCap;
+  int *m_pSlots; // hash table for grouping: group index, -1 for empty
+  int m_SlotCap;
+  uint64_t *m_pGroupKeys; // per group: its key (two words)
+  int m_GroupKeyCap;
+  uint64_t *m_pKeys; // per tee: two keys
+  int m_KeyCap;
+  SSpotGroup *m_pGroups;
+  int m_GroupCap;
+  int *m_pGroupOf; // per tee: its group (in the pass at hand), -1 for none
+  int m_GroupOfCap;
+  SBlocker *m_pBlockers;
+  int m_BlockerCap;
+  bool *m_pFlags;
+  int m_FlagCap;
+  STeePair *m_pPairs;
+  int m_PairCap;
+  int *m_pAdjStart, *m_pAdj; // per tee, the pairs it is in
+  int m_AdjStartCap, m_AdjCap;
+  SPairEvent *m_pHeap;
+  int m_HeapCap;
+  int *m_pChanged;
+  int m_ChangedCap;
+  float *m_pMove; // per tee: target x, target y, stop time
+  int m_MoveCap;
+} s_Collide;
+
+static bool grow(void **ppBuf, int *pCap, int Need, size_t Size) {
+  if (Need <= *pCap)
+    return true;
+  int Cap = *pCap > 0 ? *pCap : 64;
+  while (Cap < Need)
+    Cap *= 2;
+  void *pNew = realloc(*ppBuf, (size_t)Cap * Size);
+  if (!pNew)
+    return false;
+  *ppBuf = pNew;
+  *pCap = Cap;
+  return true;
+}
+
+static inline uint32_t cell_coord(float v) {
+  const int c = (int)v >> COLLIDE_CELL_SHIFT;
+  return (uint32_t)(c < 0 ? 0 : c > 0xffff ? 0xffff : c);
+}
+
+// Calls back for every two boxes that overlap, each pair once. pUse may skip
+// tees (NULL: none). Returns false when out of memory.
+typedef bool (*FBoxPair)(int TeeA, int TeeB, void *pUser);
+static bool for_overlapping_boxes(const STeeBox *pBoxes, const bool *pUse, int Num, FBoxPair pfnPair, void *pUser) {
+  if (Num <= 64) {
+    // (few: every pair directly is cheaper than building the hash)
+    for (int a = 0; a < Num; ++a) {
+      if (pUse && !pUse[a])
+        continue;
+      for (int b = a + 1; b < Num; ++b) {
+        if ((pUse && !pUse[b]) || pBoxes[a].m_MinX >= pBoxes[b].m_MaxX || pBoxes[b].m_MinX >= pBoxes[a].m_MaxX ||
+            pBoxes[a].m_MinY >= pBoxes[b].m_MaxY || pBoxes[b].m_MinY >= pBoxes[a].m_MaxY)
+          continue;
+        if (!pfnPair(a, b, pUser))
+          return false;
       }
     }
-    pCore->m_Accelerator.m_pGrid->m_pTeeGrid[Idx] = pChar->m_Id;
+    return true;
+  }
+  int NumEntries = 0;
+  for (int i = 0; i < Num; ++i) {
+    if (pUse && !pUse[i])
+      continue;
+    const uint32_t X0 = cell_coord(pBoxes[i].m_MinX), X1 = cell_coord(pBoxes[i].m_MaxX);
+    const uint32_t Y0 = cell_coord(pBoxes[i].m_MinY), Y1 = cell_coord(pBoxes[i].m_MaxY);
+    if (!grow((void **)&s_Collide.m_pCells, &s_Collide.m_CellCap, NumEntries + (int)((X1 - X0 + 1) * (Y1 - Y0 + 1)), sizeof(SCellEntry)))
+      return false;
+    for (uint32_t y = Y0; y <= Y1; ++y)
+      for (uint32_t x = X0; x <= X1; ++x)
+        s_Collide.m_pCells[NumEntries++] = (SCellEntry){y << 16 | x, i};
+  }
+  // LSD radix sort by cell, 8 bits a pass
+  if (!grow((void **)&s_Collide.m_pCellsTmp, &s_Collide.m_CellTmpCap, NumEntries, sizeof(SCellEntry)))
+    return false;
+  SCellEntry *pFrom = s_Collide.m_pCells, *pTo = s_Collide.m_pCellsTmp;
+  for (int Shift = 0; Shift < 32; Shift += 8) {
+    int aCount[257] = {0};
+    for (int i = 0; i < NumEntries; ++i)
+      ++aCount[((pFrom[i].m_Cell >> Shift) & 0xff) + 1];
+    bool Uniform = false;
+    for (int b = 1; b <= 256 && !Uniform; ++b)
+      Uniform = aCount[b] == NumEntries;
+    if (Uniform)
+      continue; // (the same byte everywhere: nothing to do)
+    for (int b = 0; b < 256; ++b)
+      aCount[b + 1] += aCount[b];
+    for (int i = 0; i < NumEntries; ++i)
+      pTo[aCount[(pFrom[i].m_Cell >> Shift) & 0xff]++] = pFrom[i];
+    SCellEntry *pSwap = pFrom;
+    pFrom = pTo;
+    pTo = pSwap;
+  }
+  for (int First = 0; First < NumEntries;) {
+    const uint32_t Cell = pFrom[First].m_Cell;
+    int End = First + 1;
+    while (End < NumEntries && pFrom[End].m_Cell == Cell)
+      ++End;
+    for (int a = First; a < End; ++a) {
+      const STeeBox *pA = &pBoxes[pFrom[a].m_Tee];
+      for (int b = a + 1; b < End; ++b) {
+        const STeeBox *pB = &pBoxes[pFrom[b].m_Tee];
+        if (pA->m_MinX >= pB->m_MaxX || pB->m_MinX >= pA->m_MaxX || pA->m_MinY >= pB->m_MaxY || pB->m_MinY >= pA->m_MaxY)
+          continue;
+        // only from the cell where their overlap begins
+        const uint32_t CornerCell = cell_coord(pA->m_MinY > pB->m_MinY ? pA->m_MinY : pB->m_MinY) << 16 |
+                                    cell_coord(pA->m_MinX > pB->m_MinX ? pA->m_MinX : pB->m_MinX);
+        if (CornerCell != Cell)
+          continue;
+        if (!pfnPair(pFrom[a].m_Tee, pFrom[b].m_Tee, pUser))
+          return false;
+      }
+    }
+    First = End;
+  }
+  return true;
+}
+
+// The push sums below are kept in fixed point, 1/2^24 px, so that adding
+// them up in any order gives the same result.
+#define PUSH_FIXED 16777216.f
+
+static inline uint64_t spot_key(float X, float Y) {
+  // Positions in the map are positive, where float bits sort like the floats.
+  union {
+    float f;
+    uint32_t u;
+  } UX = {X}, UY = {Y};
+  return (uint64_t)UX.u << 32 | UY.u;
+}
+
+static inline uint64_t mix_key(uint64_t A, uint64_t B) {
+  uint64_t x = A ^ (B * 0x9e3779b97f4a7c15ull);
+  x ^= x >> 30;
+  x *= 0xbf58476d1ce4e5b9ull;
+  x ^= x >> 27;
+  x *= 0x94d049bb133111ebull;
+  return x ^ (x >> 31);
+}
+
+// Puts tees with equal keys (KeyA, KeyB) in one group: m_pGroupOf[tee] is its
+// group, -1 for tees not used. Returns the number of groups, -1 when out of
+// memory. Which tees share a group does not depend on their order.
+static int group_tees(const uint64_t *pKeyA, const uint64_t *pKeyB, const bool *pUse, int Num) {
+  int Slots = 16;
+  while (Slots < Num * 2)
+    Slots *= 2;
+  if (!grow((void **)&s_Collide.m_pSlots, &s_Collide.m_SlotCap, Slots, sizeof(int)) ||
+      !grow((void **)&s_Collide.m_pGroupKeys, &s_Collide.m_GroupKeyCap, Num * 2, sizeof(uint64_t)) ||
+      !grow((void **)&s_Collide.m_pGroupOf, &s_Collide.m_GroupOfCap, Num, sizeof(int)))
+    return -1;
+  memset(s_Collide.m_pSlots, -1, sizeof(int) * (size_t)Slots);
+  int NumGroups = 0;
+  for (int i = 0; i < Num; ++i) {
+    s_Collide.m_pGroupOf[i] = -1;
+    if (!pUse[i])
+      continue;
+    const uint64_t A = pKeyA[i], B = pKeyB ? pKeyB[i] : 0;
+    for (uint32_t Slot = (uint32_t)mix_key(A, B) & (uint32_t)(Slots - 1);; Slot = (Slot + 1) & (uint32_t)(Slots - 1)) {
+      const int Group = s_Collide.m_pSlots[Slot];
+      if (Group < 0) {
+        s_Collide.m_pSlots[Slot] = NumGroups;
+        s_Collide.m_pGroupKeys[NumGroups * 2] = A;
+        s_Collide.m_pGroupKeys[NumGroups * 2 + 1] = B;
+        s_Collide.m_pGroupOf[i] = NumGroups++;
+        break;
+      }
+      if (s_Collide.m_pGroupKeys[Group * 2] == A && s_Collide.m_pGroupKeys[Group * 2 + 1] == B) {
+        s_Collide.m_pGroupOf[i] = Group;
+        break;
+      }
+    }
+  }
+  return NumGroups;
+}
+
+static bool push_groups(int A, int B, void *pUser) {
+  SSpotGroup *pGroups = pUser;
+  SSpotGroup *pA = &pGroups[A], *pB = &pGroups[B];
+  const float DX = pA->m_X - pB->m_X, DY = pA->m_Y - pB->m_Y;
+  const float Reach = PHYSICALSIZE * 1.25f;
+  const float D2 = DX * DX + DY * DY;
+  if (D2 >= Reach * Reach)
+    return true;
+  // Swapping A and B only negates the direction, which rounds the same.
+  const float Distance = sqrtf(D2);
+  const float DirX = DX / Distance, DirY = DY / Distance;
+  const float a = PHYSICALSIZE * 1.45f - Distance;
+  const int64_t SX = llrintf(a * DirX * PUSH_FIXED), SY = llrintf(a * DirY * PUSH_FIXED);
+  const int64_t MXX = llrintf(a * DirX * DirX * PUSH_FIXED), MXY = llrintf(a * DirX * DirY * PUSH_FIXED);
+  const int64_t MYY = llrintf(a * DirY * DirY * PUSH_FIXED);
+  // every tee of the other group is a contact
+  pA->m_SX += SX * pB->m_Count;
+  pA->m_SY += SY * pB->m_Count;
+  pB->m_SX -= SX * pA->m_Count;
+  pB->m_SY -= SY * pA->m_Count;
+  pA->m_MXX += MXX * pB->m_Count;
+  pA->m_MXY += MXY * pB->m_Count;
+  pA->m_MYY += MYY * pB->m_Count;
+  pB->m_MXX += MXX * pA->m_Count;
+  pB->m_MXY += MXY * pA->m_Count;
+  pB->m_MYY += MYY * pA->m_Count;
+  if (a > pA->m_Deepest)
+    pA->m_Deepest = a;
+  if (a > pB->m_Deepest)
+    pB->m_Deepest = a;
+  return true;
+}
+
+// Tees closer than 1.25 * PHYSICALSIZE push themselves apart, by DDNet's
+// formula: per contact a * (1 - (v . d + 1) / 2) * 0.75 along d, where d
+// points away from the other tee, a = 1.45 * PHYSICALSIZE - distance and v is
+// the tee's own direction of motion: harder the closer they are, softer when
+// already moving away. DDNet adds each contact to the velocity in turn and
+// damps it by 0.85 after each, so the result depends on the order and a pile
+// of n tees keeps only 0.85^n of its speed every tick.
+// Here every contact is measured against the same velocity, the pushes are
+// summed and the damping is applied once. With one contact this is DDNet's
+// push. The sum, 0.375 * (S - M v), needs only the moments S and M of where
+// the others are, so tees standing at the same spot share them. It is held to
+// what the deepest contact alone could push, so a pile does not launch anyone.
+static void player_push(SWorldCore *pCore) {
+  const int Num = pCore->m_NumCharacters;
+  SCharacterCore *pChars = pCore->m_pCharacters;
+  if (!grow((void **)&s_Collide.m_pKeys, &s_Collide.m_KeyCap, Num, sizeof(uint64_t)) ||
+      !grow((void **)&s_Collide.m_pFlags, &s_Collide.m_FlagCap, Num, sizeof(bool)) ||
+      !grow((void **)&s_Collide.m_pGroups, &s_Collide.m_GroupCap, Num, sizeof(SSpotGroup)) ||
+      !grow((void **)&s_Collide.m_pBoxes, &s_Collide.m_BoxCap, Num, sizeof(STeeBox)))
+    return;
+
+  // Group the tees at the same spot.
+  for (int i = 0; i < Num; ++i) {
+    s_Collide.m_pKeys[i] = spot_key(vgetx(pChars[i].m_Pos), vgety(pChars[i].m_Pos));
+    s_Collide.m_pFlags[i] = collides_with_tees(&pChars[i]);
+  }
+  const int NumGroups = group_tees(s_Collide.m_pKeys, NULL, s_Collide.m_pFlags, Num);
+  if (NumGroups < 0)
+    return;
+  const float Half = PHYSICALSIZE * 1.25f / 2.f;
+  for (int g = 0; g < NumGroups; ++g)
+    s_Collide.m_pGroups[g].m_Count = 0;
+  for (int i = 0; i < Num; ++i) {
+    const int Group = s_Collide.m_pGroupOf[i];
+    if (Group < 0 || s_Collide.m_pGroups[Group].m_Count++ > 0)
+      continue;
+    const float X = vgetx(pChars[i].m_Pos), Y = vgety(pChars[i].m_Pos);
+    s_Collide.m_pGroups[Group] = (SSpotGroup){0, 0, 0, 0, 0, 0.f, 1, X, Y};
+    s_Collide.m_pBoxes[Group] = (STeeBox){X - Half, X + Half, Y - Half, Y + Half};
+  }
+  if (!for_overlapping_boxes(s_Collide.m_pBoxes, NULL, NumGroups, push_groups, s_Collide.m_pGroups))
+    return;
+
+  for (int i = 0; i < Num; ++i) {
+    const int Group = s_Collide.m_pGroupOf[i];
+    if (Group < 0)
+      continue;
+    const SSpotGroup *pGroup = &s_Collide.m_pGroups[Group];
+    SCharacterCore *pChar = &pChars[i];
+    if (pGroup->m_Deepest > 0.f) {
+      const float VX = vgetx(pChar->m_Vel), VY = vgety(pChar->m_Vel);
+      const float Speed = sqrtf(VX * VX + VY * VY);
+      const float UX = Speed > 0.0001f ? VX / Speed : 0.f, UY = Speed > 0.0001f ? VY / Speed : 0.f;
+      const float SX = (float)pGroup->m_SX / PUSH_FIXED, SY = (float)pGroup->m_SY / PUSH_FIXED;
+      const float MXX = (float)pGroup->m_MXX / PUSH_FIXED, MXY = (float)pGroup->m_MXY / PUSH_FIXED;
+      const float MYY = (float)pGroup->m_MYY / PUSH_FIXED;
+      float PX = 0.375f * (SX - (MXX * UX + MXY * UY)), PY = 0.375f * (SY - (MXY * UX + MYY * UY));
+      const float Total = sqrtf(PX * PX + PY * PY), Strongest = 0.75f * pGroup->m_Deepest;
+      if (Total > Strongest) {
+        PX *= Strongest / Total;
+        PY *= Strongest / Total;
+      }
+      pChar->m_Vel = vfmul(vec2_init(VX + PX, VY + PY), 0.85f);
+    }
+    // Exactly on top of another tee there is no direction to push in; one
+    // that has moved backs off the way it came. Identical tees stay together.
+    if (pGroup->m_Count > 1 && (vgetx(pChar->m_PrevPos) != vgetx(pChar->m_Pos) || vgety(pChar->m_PrevPos) != vgety(pChar->m_Pos)))
+      pChar->m_Vel = vvadd(pChar->m_Vel, vnormalize_nomask(vvsub(pChar->m_PrevPos, pChar->m_Pos)));
   }
 }
+
+// First s in [0, Len) at which W + s U comes closer than sqrt(R2), or -1.
+static inline float first_inside(float WX, float WY, float UX, float UY, float Len, float R2) {
+  const float UU = UX * UX + UY * UY;
+  if (Len <= 0.f || UU <= 0.f)
+    return -1.f;
+  const float B = WX * UX + WY * UY;
+  if (B >= 0.f)
+    return -1.f; // not getting closer
+  const float C = WX * WX + WY * WY - R2;
+  const float Disc = B * B - UU * C;
+  if (Disc <= 0.f)
+    return -1.f; // passes by
+  float Enter = (-B - sqrtf(Disc)) / UU;
+  Enter = Enter > 0.f ? Enter : 0.f;
+  // (a meeting at the very end does not count: once two tees are stopped where
+  // they met, rounding must not find the same meeting a hair earlier again)
+  return Enter + 1e-6f < Len ? Enter : -1.f;
+}
+
+// When two tees, each moving along its path (P + t V) until its own stop time
+// S, first come closer than sqrt(R2); 2 when they never do. Swapping the two
+// only negates every difference, which rounds the same, so the time is the
+// same whichever of them is A.
+static float contact_time(float PAX, float PAY, float VAX, float VAY, float SA, float PBX, float PBY, float VBX, float VBY, float SB,
+                          float R2) {
+  float WX = PAX - PBX, WY = PAY - PBY;
+  float UX = VAX - VBX, UY = VAY - VBY;
+  const float T1 = SA < SB ? SA : SB, T2 = SA < SB ? SB : SA;
+  // both moving
+  float t = first_inside(WX, WY, UX, UY, T1, R2);
+  if (t >= 0.f)
+    return t;
+  // then only the one that stops later
+  WX += UX * T1;
+  WY += UY * T1;
+  if (SA > SB) {
+    UX = VAX;
+    UY = VAY;
+  } else {
+    UX = -VBX;
+    UY = -VBY;
+  }
+  t = first_inside(WX, WY, UX, UY, T2 - T1, R2);
+  return t >= 0.f ? T1 + t : 2.f;
+}
+
+static bool block_pair(int A, int B, void *pUser) {
+  int *pNumPairs = pUser;
+  SBlocker *pA = &s_Collide.m_pBlockers[A], *pB = &s_Collide.m_pBlockers[B];
+  const float WX = pA->m_X - pB->m_X, WY = pA->m_Y - pB->m_Y;
+  float R2 = PHYSICALSIZE * PHYSICALSIZE;
+  const float D2 = WX * WX + WY * WY;
+  if (D2 < R2) {
+    // Already overlapping: they may come apart, but not closer than they are.
+    // While they come closer, whichever of the two moves towards the other
+    // stays; the other may still move away.
+    if (D2 == 0.f)
+      return true; // at the same spot there is no closer to come
+    R2 = D2;
+    const float CloseA = (pA->m_TX - pA->m_X) * WX + (pA->m_TY - pA->m_Y) * WY; // < 0: A moves towards B
+    const float CloseB = (pB->m_TX - pB->m_X) * -WX + (pB->m_TY - pB->m_Y) * -WY;
+    if (CloseA + CloseB < 0.f) {
+      if (CloseA < 0.f)
+        pA->m_Stop = 0.f;
+      if (CloseB < 0.f)
+        pB->m_Stop = 0.f;
+    }
+  }
+  if (!grow((void **)&s_Collide.m_pPairs, &s_Collide.m_PairCap, *pNumPairs + 1, sizeof(STeePair)))
+    return false;
+  s_Collide.m_pPairs[(*pNumPairs)++] = (STeePair){A, B, R2, 2.f, 0};
+  return true;
+}
+
+static inline bool event_before(const SPairEvent *a, const SPairEvent *b) { return a->m_Time < b->m_Time; }
+
+static void heap_push(int *pSize, SPairEvent Event) {
+  SPairEvent *pHeap = s_Collide.m_pHeap;
+  int At = (*pSize)++;
+  while (At > 0 && event_before(&Event, &pHeap[(At - 1) / 2])) {
+    pHeap[At] = pHeap[(At - 1) / 2];
+    At = (At - 1) / 2;
+  }
+  pHeap[At] = Event;
+}
+
+static SPairEvent heap_pop(int *pSize) {
+  SPairEvent *pHeap = s_Collide.m_pHeap;
+  const SPairEvent Top = pHeap[0];
+  const SPairEvent Last = pHeap[--*pSize];
+  int At = 0;
+  for (;;) {
+    int Child = At * 2 + 1;
+    if (Child >= *pSize)
+      break;
+    if (Child + 1 < *pSize && event_before(&pHeap[Child + 1], &pHeap[Child]))
+      ++Child;
+    if (!event_before(&pHeap[Child], &Last))
+      break;
+    pHeap[At] = pHeap[Child];
+    At = Child;
+  }
+  if (*pSize > 0)
+    pHeap[At] = Last;
+  return Top;
+}
+
+static float solve_pair(const STeePair *pPair) {
+  const SBlocker *pA = &s_Collide.m_pBlockers[pPair->m_A], *pB = &s_Collide.m_pBlockers[pPair->m_B];
+  return contact_time(pA->m_X, pA->m_Y, pA->m_TX - pA->m_X, pA->m_TY - pA->m_Y, pA->m_Stop, pB->m_X, pB->m_Y, pB->m_TX - pB->m_X,
+                      pB->m_TY - pB->m_Y, pB->m_Stop, pPair->m_R2);
+}
+
+// Tees block each other the way DDNet's Move does, stopping where they would
+// come closer than PHYSICALSIZE (or, already closer, closer than they are),
+// but all of them move at once: DDNet moves
+// them one after the other, each seeing the ones before it already moved.
+// Every tee goes from where it is (t = 0) to where the walls let it go (t = 1)
+// in the same time. Whenever two meet, both stop there. Meetings are settled
+// from the earliest on, all those at the same time together, since a later one
+// may not happen once two tees stopped; only the pairs of a tee that just
+// stopped have to be solved again.
+// s_Collide.m_pMove holds each tee's target; m_Pos is where it starts.
+static void resolve_player_blocking(SWorldCore *pCore) {
+  const int Num = pCore->m_NumCharacters;
+  SCharacterCore *pChars = pCore->m_pCharacters;
+  const float *pMove = s_Collide.m_pMove;
+  int NumBlockers = -1;
+  if (!grow((void **)&s_Collide.m_pKeys, &s_Collide.m_KeyCap, Num * 2, sizeof(uint64_t)) ||
+      !grow((void **)&s_Collide.m_pFlags, &s_Collide.m_FlagCap, Num, sizeof(bool)) ||
+      !grow((void **)&s_Collide.m_pBlockers, &s_Collide.m_BlockerCap, Num, sizeof(SBlocker)) ||
+      !grow((void **)&s_Collide.m_pBoxes, &s_Collide.m_BoxCap, Num, sizeof(STeeBox)) ||
+      !grow((void **)&s_Collide.m_pAdjStart, &s_Collide.m_AdjStartCap, Num + 1, sizeof(int)) ||
+      !grow((void **)&s_Collide.m_pChanged, &s_Collide.m_ChangedCap, Num, sizeof(int)))
+    goto Apply;
+
+  {
+    // Tees with the same start and the same target are one blocker.
+    for (int i = 0; i < Num; ++i) {
+      s_Collide.m_pKeys[i] = spot_key(vgetx(pChars[i].m_Pos), vgety(pChars[i].m_Pos));
+      s_Collide.m_pKeys[Num + i] = spot_key(pMove[i * 3], pMove[i * 3 + 1]);
+      s_Collide.m_pFlags[i] = collides_with_tees(&pChars[i]);
+    }
+    NumBlockers = group_tees(s_Collide.m_pKeys, s_Collide.m_pKeys + Num, s_Collide.m_pFlags, Num);
+    if (NumBlockers < 0)
+      goto Apply;
+    // Two blockers can only meet if their paths, each widened by
+    // PHYSICALSIZE / 2, overlap.
+    const float Half = PHYSICALSIZE / 2.f;
+    for (int b = 0; b < NumBlockers; ++b)
+      s_Collide.m_pBlockers[b].m_Stop = -1.f; // not filled in yet
+    for (int i = 0; i < Num; ++i) {
+      const int Blocker = s_Collide.m_pGroupOf[i];
+      if (Blocker < 0 || s_Collide.m_pBlockers[Blocker].m_Stop >= 0.f)
+        continue;
+      const float PX = vgetx(pChars[i].m_Pos), PY = vgety(pChars[i].m_Pos), TX = pMove[i * 3], TY = pMove[i * 3 + 1];
+      s_Collide.m_pBlockers[Blocker] = (SBlocker){PX, PY, TX, TY, 1.f};
+      s_Collide.m_pBoxes[Blocker] =
+          (STeeBox){(PX < TX ? PX : TX) - Half, (PX < TX ? TX : PX) + Half, (PY < TY ? PY : TY) - Half, (PY < TY ? TY : PY) + Half};
+    }
+    int NumPairs = 0;
+    if (!for_overlapping_boxes(s_Collide.m_pBoxes, NULL, NumBlockers, block_pair, &NumPairs) || NumPairs == 0)
+      goto Apply;
+
+    // every blocker's pairs
+    if (!grow((void **)&s_Collide.m_pAdj, &s_Collide.m_AdjCap, NumPairs * 2, sizeof(int)) ||
+        !grow((void **)&s_Collide.m_pHeap, &s_Collide.m_HeapCap, NumPairs * 3 + NumBlockers, sizeof(SPairEvent)))
+      goto Apply;
+    int *pStart = s_Collide.m_pAdjStart;
+    memset(pStart, 0, sizeof(int) * (size_t)(NumBlockers + 1));
+    for (int k = 0; k < NumPairs; ++k) {
+      ++pStart[s_Collide.m_pPairs[k].m_A + 1];
+      ++pStart[s_Collide.m_pPairs[k].m_B + 1];
+    }
+    for (int i = 0; i < NumBlockers; ++i)
+      pStart[i + 1] += pStart[i];
+    for (int k = 0; k < NumPairs; ++k) {
+      s_Collide.m_pAdj[pStart[s_Collide.m_pPairs[k].m_A]++] = k;
+      s_Collide.m_pAdj[pStart[s_Collide.m_pPairs[k].m_B]++] = k;
+    }
+    for (int i = NumBlockers; i > 0; --i)
+      pStart[i] = pStart[i - 1];
+    pStart[0] = 0;
+
+    int HeapSize = 0;
+    for (int k = 0; k < NumPairs; ++k) {
+      STeePair *pPair = &s_Collide.m_pPairs[k];
+      pPair->m_Time = solve_pair(pPair);
+      if (pPair->m_Time <= 1.f)
+        heap_push(&HeapSize, (SPairEvent){pPair->m_Time, k, pPair->m_Version});
+    }
+    while (HeapSize > 0) {
+      // every meeting at the earliest time, together
+      const float Time = s_Collide.m_pHeap[0].m_Time;
+      int NumChanged = 0;
+      while (HeapSize > 0 && s_Collide.m_pHeap[0].m_Time == Time) {
+        const SPairEvent Event = heap_pop(&HeapSize);
+        const STeePair *pPair = &s_Collide.m_pPairs[Event.m_Pair];
+        if (Event.m_Version != pPair->m_Version)
+          continue; // solved again since
+        const int aBlocker[2] = {pPair->m_A, pPair->m_B};
+        for (int Side = 0; Side < 2; ++Side) {
+          SBlocker *pBlocker = &s_Collide.m_pBlockers[aBlocker[Side]];
+          if (Time < pBlocker->m_Stop) {
+            pBlocker->m_Stop = Time;
+            s_Collide.m_pChanged[NumChanged++] = aBlocker[Side];
+          }
+        }
+      }
+      for (int c = 0; c < NumChanged; ++c) {
+        const int Blocker = s_Collide.m_pChanged[c];
+        for (int e = pStart[Blocker]; e < pStart[Blocker + 1]; ++e) {
+          STeePair *pPair = &s_Collide.m_pPairs[s_Collide.m_pAdj[e]];
+          const float NewTime = solve_pair(pPair);
+          if (NewTime == pPair->m_Time)
+            continue;
+          pPair->m_Time = NewTime;
+          ++pPair->m_Version;
+          if (NewTime <= 1.f && grow((void **)&s_Collide.m_pHeap, &s_Collide.m_HeapCap, HeapSize + 1, sizeof(SPairEvent)))
+            heap_push(&HeapSize, (SPairEvent){NewTime, s_Collide.m_pAdj[e], pPair->m_Version});
+        }
+      }
+    }
+  }
+
+Apply:
+  // Every tee goes to its target, but those of a blocker that stopped early.
+  for (int i = 0; i < Num; ++i) {
+    const int Blocker = NumBlockers > 0 ? s_Collide.m_pGroupOf[i] : -1;
+    const SBlocker *pBlocker = Blocker >= 0 ? &s_Collide.m_pBlockers[Blocker] : NULL;
+    if (!pBlocker || pBlocker->m_Stop >= 1.f)
+      pChars[i].m_Pos = vec2_init(pMove[i * 3], pMove[i * 3 + 1]);
+    else
+      pChars[i].m_Pos = vec2_init(pBlocker->m_X + (pBlocker->m_TX - pBlocker->m_X) * pBlocker->m_Stop,
+                                  pBlocker->m_Y + (pBlocker->m_TY - pBlocker->m_Y) * pBlocker->m_Stop);
+  }
+}
+// }}}
 
 void wc_tick(SWorldCore *pCore) {
   ++pCore->m_GameTick;
@@ -2737,11 +3263,29 @@ void wc_tick(SWorldCore *pCore) {
   for (int i = 0; i < NumCharacters; ++i)
     cc_tick(&pCharacters[i]);
 
+  // Tees push each other apart, all from the same state.
+  if (NumCharacters > 1)
+    player_push(pCore);
+
   // Do tick deferred
   // funny thing no other entities than the character actually have a deferred
   // tick function lol
+  // Every tee is first moved against the walls on its own, then they all
+  // block each other at once (a tee that died on the way starts at its spawn).
+  if (NumCharacters > 1 && grow((void **)&s_Collide.m_pMove, &s_Collide.m_MoveCap, NumCharacters * 3, sizeof(float))) {
+    for (int i = 0; i < NumCharacters; ++i) {
+      mvec2 Target;
+      if (!cc_move_walls(&pCharacters[i], &Target))
+        Target = pCharacters[i].m_Pos;
+      s_Collide.m_pMove[i * 3] = vgetx(Target);
+      s_Collide.m_pMove[i * 3 + 1] = vgety(Target);
+    }
+    resolve_player_blocking(pCore);
+  } else {
+    for (int i = 0; i < NumCharacters; ++i)
+      cc_move(&pCharacters[i]);
+  }
   for (int i = 0; i < NumCharacters; ++i) {
-    cc_move(&pCharacters[i]);
     cc_quantize(&pCharacters[i]); // also refreshes m_BlockIdx / m_BlockInfo
     pCharacters[i].m_MoveRestrictions = get_move_restrictions(pCore, pCharacters[i].m_Pos, pCharacters[i].m_BlockIdx);
   }
