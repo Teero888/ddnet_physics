@@ -3034,12 +3034,11 @@ static bool block_pair(int A, int B, void *pUser) {
   float R2 = PHYSICALSIZE * PHYSICALSIZE;
   const float D2 = WX * WX + WY * WY;
   if (D2 < R2) {
-    // Already overlapping: they may come apart, but not closer than they are.
-    // While they come closer, whichever of the two moves towards the other
-    // stays; the other may still move away.
-    if (D2 == 0.f)
-      return true; // at the same spot there is no closer to come
-    R2 = D2;
+    // Already overlapping: the push sorts that out. While they come closer,
+    // whichever of the two moves towards the other stays; the other may still
+    // move away. Beyond that they do not block each other, the way DDNet lets
+    // a tee move out of one it overlaps: in a pile every tee overlaps dozens,
+    // and holding each pair to its distance made piles cost a world tick.
     const float CloseA = (pA->m_TX - pA->m_X) * WX + (pA->m_TY - pA->m_Y) * WY; // < 0: A moves towards B
     const float CloseB = (pB->m_TX - pB->m_X) * -WX + (pB->m_TY - pB->m_Y) * -WY;
     if (CloseA + CloseB < 0.f) {
@@ -3048,6 +3047,7 @@ static bool block_pair(int A, int B, void *pUser) {
       if (CloseB < 0.f)
         pB->m_Stop = 0.f;
     }
+    return true;
   }
   if (!grow((void **)&s_Collide.m_pPairs, &s_Collide.m_PairCap, *pNumPairs + 1, sizeof(STeePair)))
     return false;
