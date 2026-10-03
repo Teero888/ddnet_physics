@@ -1656,7 +1656,8 @@ void cc_pre_tick(SCharacterCore *pCore) {
     if (vsqdistance(HookBase, NewPos) > pCore->m_pTuning->m_HookLength * pCore->m_pTuning->m_HookLength) {
       pCore->m_HookState = HOOK_RETRACT_START;
       NewPos = vvadd(HookBase, vfmul(vnormalize_nomask(vvsub(NewPos, HookBase)), pCore->m_pTuning->m_HookLength));
-      emit_sound(pCore->m_pWorld, pCore->m_Pos, SOUND_TYPE_HOOK_NOATTACH, pCore->m_Id);
+      // A hook that reaches its length retracts silently (DDNet raises no
+      // event here); the no-hook sound is for hitting an unhookable tile.
     }
     // NOTE: this only really matters at the edge of the map but since we offset maps by 200 block idk if it actually matters. might remove this if it
     // ends up being a hot path. same for this logic in laser bounce
