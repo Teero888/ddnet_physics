@@ -66,10 +66,11 @@ typedef ddnet_input_t input_t;
 /* What the physics read: the float values, not the stored integers. */
 typedef ddnet_tuning_values_t tuning_t;
 #define ddnet_tune(value) (value)
-typedef ddnet_teams_t teams_t;
 
-/* client ids (player_ids, core_ids) and team numbers (teams.team) are kept in bytes */
+/* client ids (player_ids, core_ids) and team numbers (player_t::team) are kept in bytes */
 _Static_assert(DDNET_MAX_CLIENTS <= 256 && DDNET_NUM_TEAMS <= 256, "client ids and teams must fit in a byte");
+/* a world copies all its entities: keep one at two cache lines (see ddnet_entity_t) */
+_Static_assert(sizeof(ddnet_entity_t) == 128, "an entity is 128 bytes");
 
 enum {
   MAX_CLIENTS = DDNET_MAX_CLIENTS,
@@ -163,7 +164,8 @@ static inline void snapshot_take(world_t *w, tee_snapshot_t *s) {
   if (w->num_cores < SNAPSHOT_MIN_TEES)
     return;
   s->num = w->num_cores;
-  memset(s->slot, 0xff, sizeof(s->slot));
+  /* (the slots of the client ids the world has: the tees are among them) */
+  memset(s->slot, 0xff, (size_t)w->num_clients);
   for (int n = 0; n < s->num; n++) {
     const int id = w->core_ids[n];
     s->ids[n] = (uint8_t)id;
@@ -184,7 +186,7 @@ static inline void snapshot_moved(world_t *w, int client_id) {
     s->y[s->slot[client_id]] = w->characters[client_id].core.pos.y;
   }
 }
-void world_switch_timer_started(world_t *w, int number, int team);
+void world_switch_timer_started(world_t *w, int number, int row);
 /* CGameContext::GetPlayerChar: the living tee of a player, NULL otherwise. */
 character_t *get_player_char(world_t *w, int client_id);
 static inline int character_id(const character_t *chr) { return chr->core.id; }
@@ -253,23 +255,67 @@ bool game_layer_clipped(const world_t *w, vec2 check_pos);
 bool get_nearest_air_pos(const world_t *w, vec2 pos, vec2 prev_pos, vec2 *out_pos);
 bool get_nearest_air_pos_player(const world_t *w, vec2 player_pos, vec2 *out_pos);
 
-/* Whether switch number `number` is on for team `team`, a team a tee is in:
- * those always have their row (world_switch_reserve() at join and team
- * change), so that this is one load. */
-static inline bool switch_status(const world_t *w, int number, int team) {
-  return w->switch_states[team * w->num_switchers + number].status;
+/* The rows of the teams (world_t::teams, see teams.c). A player's team has a
+ * row as long as the player is connected: player_t::team_row. */
+enum { NO_TEAM_ROW = 0xff };
+/* ddnet_team_t::number of a row that no team has (any more) */
+enum { FREE_TEAM_ROW = 0xff };
+/* Free the rows of the teams that nobody is in, where nothing keeps them (see teams.c). */
+bool teams_row_unneeded(const world_t *w, int row);
+static inline void teams_release_rows(world_t *w) {
+  /* (only an empty team can go: nearly always there is none) */
+  for (int row = 0; row < w->num_team_rows; row++)
+    if (w->teams[row].state == DDNET_TEAMSTATE_EMPTY && teams_row_unneeded(w, row))
+      w->teams[row].number = FREE_TEAM_ROW;
 }
-/* The state of a switch of a team, for reading. */
-static inline ddnet_switch_state_t switch_state(const world_t *w, int number, int team) {
-  return ddnet_world_switch(w, number, team);
+/* the row of a team, -1 if it has none */
+static inline int team_row_find(const world_t *w, int team) {
+  for (int row = 0; row < w->num_team_rows; row++)
+    if (w->teams[row].number == team)
+      return row;
+  return -1;
 }
-/* The state of a switch of a team, for writing: the team gets its row first.
- * NULL if there is no memory for it. */
-ddnet_switch_state_t *world_switch_write(world_t *w, int number, int team);
-/* Rows for the switches of the teams up to `team`. False if there is no memory for them. */
-bool world_switch_grow(world_t *w, int team);
-static inline bool world_switch_reserve(world_t *w, int team) {
-  return team < w->switch_teams || world_switch_grow(w, team);
+/* the row of a team, made if it has none; -1 if there is no memory for it */
+int team_row_get(world_t *w, int team);
+int team_row_make(world_t *w, int team);
+/* The state of a team (one without a row is empty). */
+static inline int team_state(const world_t *w, int team) {
+  const int row = team_row_find(w, team);
+  return row >= 0 ? w->teams[row].state : DDNET_TEAMSTATE_EMPTY;
+}
+
+/* Whether switch number `number` is on for the team of row `row` (the row of
+ * a tee's team: one load). */
+static inline bool switch_status(const world_t *w, int number, int row) {
+  return w->switch_states[row * w->num_switchers + number].status;
+}
+/* The state of a switch of the team of a row, or for -1 (a team without a
+ * row) what the map starts it with or what a reset leaves (see
+ * world_t::rowless_switches_reset). */
+static inline ddnet_switch_state_t switch_state(const world_t *w, int number, int row) {
+  if (row >= 0)
+    return w->switch_states[row * w->num_switchers + number];
+  ddnet_switch_state_t state = {0, 0, true, 0};
+  if (w->rowless_switches_reset) {
+    state.status = w->switch_initial[number];
+    state.type = TILE_SWITCHOPEN;
+  }
+  return state;
+}
+
+/* The tables of the turrets (gun_timers) and of the busy draggers
+ * (dragger_targets) have an entry per team row and per client slot: room for
+ * table_teams rows and table_clients slots. False if there is no memory to make
+ * room for more. */
+bool world_tables_grow(world_t *w, int teams, int clients);
+static inline bool world_tables_reserve(world_t *w, int teams, int clients) {
+  return (teams <= w->table_teams && clients <= w->table_clients) || world_tables_grow(w, teams, clients);
+}
+/* A table of targets and beams (see ddnet_world_t::dragger_targets): its owner, then the target of each
+ * team row, then the beam on each client. */
+static inline int dragger_table_size(const world_t *w) { return 1 + w->table_teams + w->table_clients; }
+static inline int *dragger_table(const world_t *w, int table) {
+  return &w->dragger_targets[table * dragger_table_size(w)];
 }
 
 /* ---------------------------------------------------- character_core.c */
@@ -330,6 +376,13 @@ static inline void world_touch(world_t *w, unsigned kind, int index) {
     w->touch_log[w->touch_count++] = entry;
 }
 
+/* The state of a switch of the team of a row, for writing (noted for ddnet_world_copy()). */
+static inline ddnet_switch_state_t *world_switch_write(world_t *w, int number, int row) {
+  const int index = row * w->num_switchers + number;
+  world_touch(w, TOUCH_SWITCHER, index);
+  return &w->switch_states[index];
+}
+
 /* An entity, to write to: it is noted for ddnet_world_copy(). */
 static inline entity_t *entity(world_t *w, int index) {
   world_touch(w, TOUCH_ENTITY, index);
@@ -337,7 +390,10 @@ static inline entity_t *entity(world_t *w, int index) {
 }
 /* An entity, to look at. */
 static inline const entity_t *entity_peek(const world_t *w, int index) { return &w->entities[index]; }
-void core_tick(world_t *w, core_t *core, bool use_input, bool do_deferred_tick, int flags);
+/* What the core of a frozen tee leaves out of its input (CCharacter::DDRaceTick clears it in m_Input):
+ * the direction and the jump, and the hook. */
+enum { HELD_MOVE = 1, HELD_HOOK = 2 };
+void core_tick(world_t *w, core_t *core, int held, bool do_deferred_tick, int flags);
 void core_tick_deferred(world_t *w, core_t *core);
 float velocity_ramp(const tuning_t *tuning, float value);
 /* The start of CCharacterCore::Move: the velocity ramp, which multiplies vel.x by *ramp_value. False if
@@ -381,7 +437,6 @@ input_count_t count_input(int prev, int cur);
 /* --------------------------------------------------------- character.c */
 
 void character_spawn(world_t *w, int client_id, vec2 pos);
-void character_on_predicted_input(world_t *w, character_t *chr, const input_t *new_input);
 void character_on_direct_input(world_t *w, character_t *chr, const input_t *new_input);
 void character_pre_tick(world_t *w, character_t *chr);
 void character_tick(world_t *w, character_t *chr);
@@ -421,8 +476,11 @@ static inline void entity_mark_for_destroy(world_t *w, entity_t *ent) {
     return;
   ent->marked_for_destroy = true;
   w->entities_marked = true;
-  if (w->num_marked_entities < DDNET_MAX_MARKED_ENTITIES)
+  if (w->num_marked_entities < DDNET_MAX_MARKED_ENTITIES &&
+      (w->marked_entities || (w->marked_entities = malloc(DDNET_MAX_MARKED_ENTITIES * sizeof(int)))))
     w->marked_entities[w->num_marked_entities] = (int)(ent - w->entities);
+  else /* (more than fit, or no memory for the list: all entities are looked through) */
+    w->num_marked_entities = DDNET_MAX_MARKED_ENTITIES;
   w->num_marked_entities++;
 }
 int entity_owner_id(const entity_t *ent);
@@ -439,31 +497,37 @@ void light_step(world_t *w, int index);
 /* ------------------------------------------------------------- teams.c */
 
 void teams_reset(world_t *w);
-void teams_reset_switchers(world_t *w, int team);
+void teams_reset_switchers(world_t *w, int row);
 void teams_on_character_start(world_t *w, int client_id);
 void teams_on_character_finish(world_t *w, int client_id);
 void teams_on_character_spawn(world_t *w, int client_id);
 void teams_on_character_death(world_t *w, int client_id, int weapon);
 void teams_tick(world_t *w);
 void teams_set_force_character_team(world_t *w, int client_id, int team);
-void teams_check_team_finished(world_t *w, int team);
+/* (row: the row of the team, which callers know) */
+void teams_check_team_finished(world_t *w, int team, int row);
 int teams_team_size(const world_t *w, int team);
 bool teams_team_locked(const world_t *w, int team);
 void teams_set_team_lock(world_t *w, int team, bool lock);
 bool teams_is_valid_team_number(int team);
 
 /* CTeamsCore */
-static inline int teams_team(const world_t *w, int client_id) { return w->teams.team[client_id]; }
+static inline int teams_team(const world_t *w, int client_id) { return w->players[client_id].team; }
+static inline int teams_team_row(const world_t *w, int client_id) { return w->players[client_id].team_row; }
+static inline int character_team_row(const world_t *w, const character_t *chr) {
+  return teams_team_row(w, character_id(chr));
+}
 bool teams_can_keep_hook(const world_t *w, int client_id1, int client_id2);
 /* CGameTeams::CanCollide (inline: the loops over pairs of tees ask it for every pair) */
 static inline bool teams_can_collide(const world_t *w, int client_id1, int client_id2) {
-  const uint8_t *team = w->teams.team;
+  const player_t *a = &w->players[client_id1], *b = &w->players[client_id2];
   if (client_id1 == client_id2)
     return true;
-  if (w->teams.is_solo[client_id1] || w->teams.is_solo[client_id2])
+  if (a->is_solo || b->is_solo)
     return false;
-  return team[client_id1] == team[client_id2];
+  return a->team == b->team;
 }
+
 bool teams_get_solo(const world_t *w, int client_id);
 
 /* ---------------------------------------------------- gamecontroller.c */

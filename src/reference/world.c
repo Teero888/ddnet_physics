@@ -610,6 +610,9 @@ void ddnet_world_sync(ddnet_world_t *w) { (void)w; }
 void ddnet_world_changed(ddnet_world_t *w) { (void)w; }
 
 /* The reference implementation reads world->tuning directly. */
+/* (each world has tuning of its own here) */
+ddnet_tuning_t *ddnet_world_tuning_edit(ddnet_world_t *w) { return w->tuning; }
+
 void ddnet_world_tuning_changed(ddnet_world_t *w) { (void)w; }
 
 /* One iteration of the tick loop in CServer::Run. */

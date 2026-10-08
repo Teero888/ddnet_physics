@@ -29,10 +29,21 @@ static bool world_reserve_clients(world_t *w, int count) {
     capacity *= 2;
   if (capacity > MAX_CLIENTS)
     capacity = MAX_CLIENTS;
-  player_t *players = realloc(w->players, (size_t)capacity * sizeof(*players));
+  /* the players, and behind them the lists of ids (player_ids, core_ids), with
+   * room for capacity each */
+  const int old = w->client_capacity;
+  player_t *players = realloc(w->players, (size_t)capacity * (sizeof(*players) + 2));
   if (!players)
     return false;
+  uint8_t *player_ids = (uint8_t *)&players[capacity], *core_ids = player_ids + capacity;
+  /* (from behind the room for the old number of players, before that room is cleared below) */
+  if (old) {
+    memmove(core_ids, (uint8_t *)&players[old] + old, (size_t)old);
+    memmove(player_ids, (uint8_t *)&players[old], (size_t)old);
+  }
   w->players = players;
+  w->player_ids = player_ids;
+  w->core_ids = core_ids;
   character_t *characters = realloc(w->characters, (size_t)capacity * sizeof(*characters));
   if (!characters)
     return false;
@@ -64,10 +75,9 @@ core_t *world_core(world_t *w, int client_id) {
 /* What CCharacterCore::Tick stores in m_Angle on every tick. */
 int ddnet_character_angle(const ddnet_character_t *chr) {
   const core_t *core = &chr->core;
-  if (!core->has_ticked)
-    return 0;
-  /* atan2 is the double version, called with integers */
-  float tmp_angle = atan2(core->input.target_y, core->input.target_x);
+  /* atan2 is the double version, called with integers (before the first tick:
+   * 0, 0, for which it is 0, the angle of a core that did not tick yet) */
+  float tmp_angle = atan2(core->aim_y, core->aim_x);
   if (tmp_angle < -(PI / 2.0f))
     return (int)((tmp_angle + (2.0f * PI)) * 256.0f);
   return (int)(tmp_angle * 256.0f);
@@ -84,8 +94,10 @@ void ddnet_character_changed(ddnet_world_t *w, int client_id) {
    * positions of the tick, the lazy bullets and the bullets that were known to be far from all tees (see
    * world_core_add()) */
   w->characters[client_id].quiet_known = false;
-  /* (its team may be another one now, see switch_status()) */
-  world_switch_reserve(w, w->teams.team[client_id]);
+  /* (its team may be another one now: its row) */
+  const int row = team_row_get(w, w->players[client_id].team);
+  if (row >= 0)
+    w->players[client_id].team_row = row;
   w->tee_snapshot = NULL;
   w->lazy_wake = true;
   w->projectile_wakeup = 0;
@@ -350,6 +362,42 @@ void world_release_hooked(world_t *w, int client_id) {
 
 /* The range of a turret, dragger or laser wall as half the side of a square
  * around it, or -1 if it is none of them. No tee outside of it matters to it. */
+/* Copies of a world share its tune zones too (ddnet_tune_block_t). */
+static void tune_block_release(ddnet_tune_block_t *block) {
+  if (block && __atomic_sub_fetch(&block->refs, 1, __ATOMIC_ACQ_REL) == 0)
+    free(block);
+}
+
+/* A block of tune zones of the world's own, with the tuning it has (zeroed if
+ * none). False if there is no memory for it. */
+static bool tune_block_make(world_t *w, int zones) {
+  const size_t bytes = sizeof(ddnet_tune_block_t) + (size_t)zones * (sizeof(ddnet_tuning_t) + sizeof(ddnet_tuning_values_t));
+  ddnet_tune_block_t *block = calloc(1, bytes);
+  if (!block)
+    return false;
+  block->refs = 1;
+  block->count = zones;
+  /* (the values first: they need the alignment of malloc) */
+  ddnet_tuning_values_t *values = (ddnet_tuning_values_t *)(block + 1);
+  ddnet_tuning_t *tuning = (ddnet_tuning_t *)(values + zones);
+  if (w->tune_block) {
+    memcpy(tuning, w->tuning, (size_t)zones * sizeof(*tuning));
+    memcpy(values, w->tuning_values, (size_t)zones * sizeof(*values));
+  }
+  tune_block_release(w->tune_block);
+  w->tune_block = block;
+  w->tuning = tuning;
+  w->tuning_values = values;
+  return true;
+}
+
+ddnet_tuning_t *ddnet_world_tuning_edit(ddnet_world_t *w) {
+  if (w->tune_block && __atomic_load_n(&w->tune_block->refs, __ATOMIC_ACQUIRE) > 1 &&
+      !tune_block_make(w, w->num_tune_zones))
+    return NULL;
+  return w->tuning;
+}
+
 /* Copies of a world share its laser grid, which does not change: the last of them frees it. */
 static void laser_grid_release(ddnet_laser_grid_t *grid) {
   if (grid && __atomic_sub_fetch(&grid->refs, 1, __ATOMIC_ACQ_REL) == 0)
@@ -761,9 +809,8 @@ void create_explosion(world_t *w, vec2 pos, int owner, int weapon, bool no_damag
   /* nobody is hit */
   if (num == 0)
     return;
-  bool team_mask[NUM_DDRACE_TEAMS];
-  for (int i = 0; i < NUM_DDRACE_TEAMS; i++)
-    team_mask[i] = true;
+  /* the teams that took their explosion already (DDNet's team mask, inverted) */
+  uint64_t exploded[(NUM_DDRACE_TEAMS + 63) / 64] = {0};
   for (int i = 0; i < num; i++) {
     character_t *chr = &w->characters[ents[i]];
     vec2 diff = vsub(chr->pos, pos);
@@ -793,9 +840,9 @@ void create_explosion(world_t *w, vec2 pos, int owner, int weapon, bool no_damag
       /* Explode at most once per team */
       int player_team = character_team(w, chr);
       if ((owner_char ? owner_char->core.grenade_hit_disabled : !w->config.sv_hit) || no_damage) {
-        if (!team_mask[player_team])
+        if (exploded[player_team >> 6] >> (player_team & 63) & 1)
           continue;
-        team_mask[player_team] = false;
+        exploded[player_team >> 6] |= (uint64_t)1 << (player_team & 63);
       }
 
       character_take_damage(w, chr, vscale(vscale(force_dir, dmg), 2), (int)dmg, owner, weapon);
@@ -945,26 +992,35 @@ DDNET_HOT static void player_on_predicted_early_input(world_t *w, int client_id,
     character_on_direct_input(w, &w->characters[client_id], new_input);
 }
 
-/* CPlayer::OnPredictedInput */
-DDNET_HOT static void player_on_predicted_input(world_t *w, int client_id, const input_t *new_input) {
-  player_t *player = &w->players[client_id];
-  /* skip the input if chat is active */
-  if ((player->player_flags & DDNET_PLAYERFLAG_CHATTING) &&
-      (new_input->player_flags & DDNET_PLAYERFLAG_CHATTING))
-    return;
-
-  if (player->has_character && !player->paused && !(new_input->player_flags & DDNET_PLAYERFLAG_SPEC_CAM))
-    character_on_predicted_input(w, &w->characters[client_id], new_input);
-}
+/* (CPlayer::OnPredictedInput, which skips the input if chat is active in the
+ * player flags of the last input and the new one, and otherwise hands it to
+ * the tee for the same reasons as above, comes right after the function above
+ * with the same input and the same player flags: it is part of
+ * character_on_direct_input()) */
 
 bool ddnet_player_join(ddnet_world_t *w, int client_id) {
   if (client_id < 0 || client_id >= MAX_CLIENTS || !world_reserve_clients(w, client_id + 1) ||
-      w->players[client_id].active || !world_switch_reserve(w, w->teams.team[client_id]))
+      (client_id < w->num_clients && w->players[client_id].active))
+    return false;
+  /* The slots nobody used yet, up to this one, are as teams_reset() left them
+   * (see slots_forced_solo). */
+  for (int i = w->num_clients; i <= client_id; i++) {
+    memset(&w->players[i], 0, sizeof(w->players[i]));
+    w->players[i].team = w->slots_forced_solo ? i : TEAM_FLOCK;
+  }
+  const int row = team_row_get(w, w->players[client_id].team);
+  if (row < 0 || !world_tables_reserve(w, w->table_teams, client_id + 1))
     return false;
 
-  /* CPlayer::CPlayer and CPlayer::Reset */
+  /* CPlayer::CPlayer and CPlayer::Reset (what CGameTeams has of the slot stays) */
   player_t *player = &w->players[client_id];
+  const player_t slot = *player;
   memset(player, 0, sizeof(*player));
+  player->team = slot.team;
+  player->is_solo = slot.is_solo;
+  player->tee_started = slot.tee_started;
+  player->tee_finished = slot.tee_finished;
+  player->team_row = row;
   player->active = true;
   player->die_tick = server_tick(w);
   player->previous_die_tick = player->die_tick;
@@ -1023,7 +1079,7 @@ void ddnet_player_set_team(ddnet_world_t *w, int client_id, int team) {
 /* The timer of one switch of one team. Returns whether it is still running. */
 static bool switch_timer_tick(world_t *w, int s, int j) {
   /* (a team without a row has no timer running) */
-  if (j >= w->switch_teams)
+  if (j >= w->num_team_rows)
     return false;
   const int index = j * w->num_switchers + s;
   ddnet_switch_state_t *switcher = &w->switch_states[index];
@@ -1031,14 +1087,14 @@ static bool switch_timer_tick(world_t *w, int s, int j) {
     return false;
   if (switcher->end_tick <= server_tick(w) && switcher->type == TILE_SWITCHTIMEDOPEN) {
     world_touch(w, TOUCH_SWITCHER, index);
-    w->switches_touched[j] = true;
+    w->teams[j].switches_touched = true;
     switcher->status = false;
     switcher->end_tick = 0;
     switcher->type = TILE_SWITCHCLOSE;
     return false;
   } else if (switcher->end_tick <= server_tick(w) && switcher->type == TILE_SWITCHTIMEDCLOSE) {
     world_touch(w, TOUCH_SWITCHER, index);
-    w->switches_touched[j] = true;
+    w->teams[j].switches_touched = true;
     switcher->status = true;
     switcher->end_tick = 0;
     switcher->type = TILE_SWITCHOPEN;
@@ -1047,40 +1103,151 @@ static bool switch_timer_tick(world_t *w, int s, int j) {
   return true;
 }
 
-DDNET_COLD bool world_switch_grow(world_t *w, int team) {
-  /* rows for the teams up to this one, as the map starts their switches (a
-   * copy of only what changed is then not enough anymore, see ddnet_world_copy()) */
-  const int rows = team + 1;
-  if (w->num_switchers) {
-    ddnet_switch_state_t *states =
-        realloc(w->switch_states, (size_t)rows * (size_t)w->num_switchers * sizeof(*states));
-    if (!states)
+/* Room in the tables of the turrets and draggers for `teams` team rows and
+ * `clients` client slots: every row and table again, the new entries 0 for the
+ * turrets and -1 for the draggers (a copy of only what changed is then not
+ * enough anymore, see ddnet_world_copy()). */
+DDNET_COLD bool world_tables_grow(world_t *w, int teams, int clients) {
+  teams = maxi(teams, w->table_teams);
+  clients = maxi(clients, w->table_clients);
+  const int old_teams = w->table_teams, old_clients = w->table_clients;
+  if (w->num_guns) {
+    const int old_stride = old_teams + old_clients, stride = teams + clients;
+    int *timers = calloc((size_t)w->num_guns * (size_t)stride, sizeof(*timers));
+    if (!timers)
       return false;
-    const ddnet_switch_state_t start = {0, 0, true, 0};
-    for (int i = w->switch_teams * w->num_switchers; i < rows * w->num_switchers; i++)
-      states[i] = start;
-    w->switch_states = states;
+    for (int g = 0; old_stride && g < w->num_guns; g++) {
+      memcpy(&timers[g * stride], &w->gun_timers[g * old_stride], (size_t)old_teams * sizeof(*timers));
+      memcpy(&timers[g * stride + teams], &w->gun_timers[g * old_stride + old_teams],
+             (size_t)old_clients * sizeof(*timers));
+    }
+    free(w->gun_timers);
+    w->gun_timers = timers;
   }
-  w->switch_teams = rows;
+  if (w->num_dragger_targets) {
+    const int old_size = 1 + old_teams + old_clients, size = 1 + teams + clients;
+    int *tables = malloc((size_t)w->num_dragger_targets * (size_t)size * sizeof(*tables));
+    if (!tables)
+      return false;
+    for (int t = 0; t < w->num_dragger_targets; t++) {
+      const int *from = &w->dragger_targets[t * old_size];
+      int *to = &tables[t * size];
+      to[0] = from[0];
+      for (int i = 0; i < teams; i++)
+        to[1 + i] = i < old_teams ? from[1 + i] : -1;
+      for (int i = 0; i < clients; i++)
+        to[1 + teams + i] = i < old_clients ? from[1 + old_teams + i] : -1;
+    }
+    free(w->dragger_targets);
+    w->dragger_targets = tables;
+    w->dragger_targets_room = w->num_dragger_targets * size;
+  }
+  w->table_teams = teams;
+  w->table_clients = clients;
   return true;
 }
 
-ddnet_switch_state_t *world_switch_write(world_t *w, int number, int team) {
-  if (!world_switch_reserve(w, team))
-    return NULL;
-  const int index = team * w->num_switchers + number;
-  world_touch(w, TOUCH_SWITCHER, index);
-  return &w->switch_states[index];
+/* A row for a team that has none, as the map starts it (see world_t::teams);
+ * -1 if there is no memory for it. */
+DDNET_COLD int team_row_make(world_t *w, int team) {
+  /* a row that no team has, if there is one */
+  teams_release_rows(w);
+  for (int row = 0; row < w->num_team_rows; row++) {
+    if (w->teams[row].number != FREE_TEAM_ROW)
+      continue;
+    w->teams[row] = (ddnet_team_t){.kill_tick = -1,
+                                   .number = (uint8_t)team,
+                                   .state = DDNET_TEAMSTATE_EMPTY,
+                                   .locked = false,
+                                   .switches_touched = w->rowless_switches_touched};
+    for (int s = 0; s < w->num_switchers; s++)
+      w->switch_states[row * w->num_switchers + s] = switch_state(w, s, -1);
+    const int stride = w->table_teams + w->table_clients;
+    for (int g = 0; g < w->num_guns; g++)
+      w->gun_timers[g * stride + row] = 0;
+    for (int t = 0; t < w->num_dragger_targets; t++)
+      dragger_table(w, t)[1 + row] = -1;
+    /* (written all over: a copy of only what changed would not see all of it) */
+    world_touch_reset(w);
+    return row;
+  }
+  const int row = w->num_team_rows;
+  /* (a row has its timer in every turret and its target in every busy dragger) */
+  if (!world_tables_reserve(w, row + 1, w->table_clients))
+    return -1;
+  if (w->num_switchers) {
+    ddnet_switch_state_t *states =
+        realloc(w->switch_states, (size_t)(row + 1) * (size_t)w->num_switchers * sizeof(*states));
+    if (!states)
+      return -1;
+    for (int s = 0; s < w->num_switchers; s++)
+      states[row * w->num_switchers + s] = switch_state(w, s, -1);
+    w->switch_states = states;
+  }
+  ddnet_team_t *teams = realloc(w->teams, (size_t)(row + 1) * sizeof(*teams));
+  if (!teams)
+    return -1;
+  teams[row] = (ddnet_team_t){.kill_tick = -1,
+                              .number = (uint8_t)team,
+                              .state = DDNET_TEAMSTATE_EMPTY,
+                              .locked = false,
+                              .switches_touched = w->rowless_switches_touched};
+  w->teams = teams;
+  w->num_team_rows = row + 1;
+  return row;
+}
+
+ddnet_team_t ddnet_world_team(const ddnet_world_t *w, int team) {
+  const int row = team_row_find(w, team);
+  if (row >= 0)
+    return w->teams[row];
+  return (ddnet_team_t){.kill_tick = -1,
+                        .number = (uint8_t)team,
+                        .state = DDNET_TEAMSTATE_EMPTY,
+                        .locked = false,
+                        .switches_touched = w->rowless_switches_touched};
+}
+
+bool ddnet_world_lock_team(ddnet_world_t *w, int team, bool locked) {
+  if (team == TEAM_FLOCK || !teams_is_valid_team_number(team))
+    return false;
+  const int row = team_row_get(w, team);
+  if (row < 0)
+    return false;
+  w->teams[row].locked = locked;
+  return true;
+}
+
+ddnet_switch_state_t ddnet_world_switch(const ddnet_world_t *w, int number, int team) {
+  return switch_state(w, number, team_row_find(w, team));
+}
+
+int ddnet_dragger_target(const ddnet_world_t *w, const ddnet_dragger_t *dragger, int team) {
+  const int row = team_row_find(w, team);
+  /* (a team without a row never had a target) */
+  if (dragger->targets < 0 || row < 0)
+    return -1;
+  return dragger_table(w, dragger->targets)[1 + row];
+}
+
+int ddnet_dragger_beam(const ddnet_world_t *w, const ddnet_dragger_t *dragger, int client_id) {
+  if (dragger->targets < 0 || client_id < 0 || client_id >= w->num_clients)
+    return -1;
+  return dragger_table(w, dragger->targets)[1 + w->table_teams + client_id];
 }
 
 /* A switch of a team got a timer. */
-void world_switch_timer_started(world_t *w, int number, int team) {
+void world_switch_timer_started(world_t *w, int number, int row) {
   if (w->timed_switches_overflow)
     return;
-  const int entry = number << 8 | team;
+  const int entry = number << 8 | row;
   for (int n = 0; n < w->num_timed_switches; n++)
     if (w->timed_switches[n] == entry)
       return;
+  /* (no memory for the list: as if it were full) */
+  if (!w->timed_switches &&
+      !(w->timed_switches = malloc(DDNET_MAX_TIMED_SWITCHES * sizeof(*w->timed_switches))))
+    w->num_timed_switches = DDNET_MAX_TIMED_SWITCHES;
   if (w->num_timed_switches == DDNET_MAX_TIMED_SWITCHES) {
     w->num_timed_switches = 0;
     w->timed_switches_overflow = true;
@@ -1144,7 +1311,7 @@ DDNET_NOINLINE static void world_switch_timers_tick(world_t *w) {
     /* too many timers to keep track of: look at all of them, like DDNet */
     bool any = false;
     for (int s = 0; s < w->num_switchers; s++)
-      for (int j = 0; j < w->switch_teams; ++j)
+      for (int j = 0; j < w->num_team_rows; ++j)
         any |= switch_timer_tick(w, s, j);
     w->timed_switches_overflow = any;
   } else {
@@ -1187,13 +1354,24 @@ void world_touch_reset(world_t *w) {
   world_new_lineage(w);
 }
 
+/* The switches of every team may be in another state than a reset leaves them in. */
+static void world_touch_all_switches(world_t *w) {
+  w->rowless_switches_touched = true;
+  for (int row = 0; row < w->num_team_rows; row++)
+    w->teams[row].switches_touched = true;
+}
+
 void ddnet_world_changed(ddnet_world_t *w) {
   world_touch_reset(w);
   /* the switchers may have been written to */
-  memset(w->switches_touched, 1, sizeof(w->switches_touched));
-  /* (and the teams, see switch_status()) */
-  for (int n = 0; n < w->num_players; n++)
-    world_switch_reserve(w, w->teams.team[w->player_ids[n]]);
+  world_touch_all_switches(w);
+  /* (and the teams of the players: their rows) */
+  for (int n = 0; n < w->num_players; n++) {
+    player_t *player = &w->players[w->player_ids[n]];
+    const int row = team_row_get(w, player->team);
+    if (row >= 0)
+      player->team_row = row;
+  }
 }
 
 /* Convert the tuning to floats exactly like every read of a CTuneParam does. */
@@ -1203,6 +1381,9 @@ void ddnet_world_sync(ddnet_world_t *w) {
 }
 
 void ddnet_world_tuning_changed(ddnet_world_t *w) {
+  /* (tuning_values are written below: the world's own, see ddnet_world_tuning_edit()) */
+  if (!ddnet_world_tuning_edit(w))
+    return;
   /* with the tuning as it was */
   if (w->tuning_values && w->entities)
     projectiles_forget_orbits(w, server_tick(w), true);
@@ -1289,14 +1470,11 @@ static inline bool world_tick_lone(world_t *w) {
       (w->first_entity[DDNET_ENTTYPE_FLAG] != -1))
     return false;
 
-  /* CPlayer::OnPredictedEarlyInput */
+  /* CPlayer::OnPredictedEarlyInput (and CPlayer::OnPredictedInput with it) */
   player->player_flags = input->player_flags;
   character_on_direct_input(w, chr, input);
 
   w->tick++;
-
-  /* CPlayer::OnPredictedInput: the same input and the same correction of its aim as just now */
-  chr->saved_input = chr->latest_input;
 
   /* CGameWorld::Tick */
   if (w->first_entity[DDNET_ENTTYPE_PROJECTILE] != -1)
@@ -1386,14 +1564,14 @@ DDNET_NOINLINE static void world_tick_any(world_t *w) {
   /* The inputs for the upcoming tick are handed to the game twice. First
    * before the tick counter advances: this is when weapons fire. Then after it
    * ("apply new input"), which only looks at the player and its tee and only
-   * sets the input it saves, and does not look at the tick: that comes right
-   * after the first for each player, which nothing a weapon of another player
-   * does changes (a weapon kills nobody, pauses nobody). */
+   * sets the input it saves, and does not look at the tick: the same input the
+   * first one set, for the same players, which nothing a weapon of another
+   * player changes (a weapon kills nobody, pauses nobody). It is part of the
+   * first (see character_on_direct_input()). */
   PROF_BEGIN(PROF_DIRECT_INPUT);
   for (int n = 0; n < w->num_players; n++) {
     const int c = w->player_ids[n];
     player_on_predicted_early_input(w, c, &w->players[c].input);
-    player_on_predicted_input(w, c, &w->players[c].input);
   }
   PROF_END(PROF_DIRECT_INPUT);
 
@@ -1450,7 +1628,7 @@ static void world_execute_map_command(void *user, const char *name, char *args) 
       if (number >= 0 && number <= w->num_switchers - 1) {
         w->switch_initial[number] = false;
         /* a reset of the switches of a team leaves this one in another state now */
-        memset(w->switches_touched, 1, sizeof(w->switches_touched));
+        world_touch_all_switches(w);
       }
     }
   } else if (strcasecmp(name, "mapbug") == 0) {
@@ -1478,8 +1656,8 @@ bool ddnet_world_init(ddnet_world_t *w, const ddnet_collision_t *col, const ddne
     return false;
   /* Only the tune zones that exist in the map can ever be looked up. */
   w->num_tune_zones = col->highest_tune_zone + 1;
-  w->tuning = calloc((size_t)w->num_tune_zones, sizeof(*w->tuning));
-  w->tuning_values = calloc((size_t)w->num_tune_zones, sizeof(*w->tuning_values));
+  if (!tune_block_make(w, w->num_tune_zones))
+    goto fail;
   /* CWorldCore::InitSwitchers */
   w->num_switchers = col->highest_switch_number > 0 ? col->highest_switch_number + 1 : 0;
   w->switch_initial = calloc((size_t)(w->num_switchers ? w->num_switchers : 1), sizeof(*w->switch_initial));
@@ -1510,8 +1688,6 @@ bool ddnet_world_init(ddnet_world_t *w, const ddnet_collision_t *col, const ddne
   /* the game controller is created, with its CGameTeams */
   teams_reset(w);
 
-  for (int i = 0; i < DDNET_PROJECTILE_DUE_SIZE; i++)
-    w->projectile_due[i] = -1;
 
   /* create all entities from the game layer */
   if (!controller_create_all_entities(w))
@@ -1537,8 +1713,13 @@ bool ddnet_world_init(ddnet_world_t *w, const ddnet_collision_t *col, const ddne
         w->pickups_generic = true;
         break;
       }
-      w->pickup_movers[w->num_pickup_movers] = index;
-      w->pickup_mover_ids[w->num_pickup_movers] = id;
+      ddnet_pickup_mover_t *movers =
+          realloc(w->pickup_movers, (size_t)(w->num_pickup_movers + 1) * sizeof(*movers));
+      if (!movers)
+        goto fail;
+      w->pickup_movers = movers;
+      movers[w->num_pickup_movers].index = index;
+      movers[w->num_pickup_movers].id = id;
       w->num_pickup_movers++;
     }
     if (id != 0)
@@ -1548,7 +1729,7 @@ bool ddnet_world_init(ddnet_world_t *w, const ddnet_collision_t *col, const ddne
   w->orbit_old_teleport_weapons = w->config.sv_old_teleport_weapons;
   ddnet_world_tuning_changed(w);
   /* (a first reset of the switches of a team sets their type) */
-  memset(w->switches_touched, 1, sizeof(w->switches_touched));
+  world_touch_all_switches(w);
   /* what changes from here on is kept track of for ddnet_world_copy() */
   world_touch_reset(w);
   return true;
@@ -1559,8 +1740,7 @@ fail:
 }
 
 void ddnet_world_free(ddnet_world_t *w) {
-  free(w->tuning);
-  free(w->tuning_values);
+  tune_block_release(w->tune_block);
   free(w->switch_states);
   free(w->switch_initial);
   free(w->players);
@@ -1572,6 +1752,12 @@ void ddnet_world_free(ddnet_world_t *w) {
   free(w->sight_memo);
   laser_grid_release(w->laser_grid);
   free(w->laser_tiles);
+  free(w->teams);
+  free(w->pickup_movers);
+  free(w->projectile_due);
+  free(w->timed_switches);
+  free(w->busy_dragger_ids);
+  free(w->marked_entities);
   free(w->touch_log);
   free(w->projectile_awake);
   free(w->projectile_parked);
@@ -1579,12 +1765,19 @@ void ddnet_world_free(ddnet_world_t *w) {
 }
 
 /* Copy count elements of size into *buffer, which holds old_count elements.
- * The allocation is reused if the element count did not change. */
+ * The allocation is reused if the element count did not change, and freed if
+ * there are none (nothing reads the buffer then). */
 static bool copy_buffer(void *buffer_ptr, int old_count, const void *src, int count, size_t size) {
   void *buffer;
   memcpy(&buffer, buffer_ptr, sizeof(buffer));
+  if (!count) {
+    free(buffer);
+    buffer = NULL;
+    memcpy(buffer_ptr, &buffer, sizeof(buffer));
+    return true;
+  }
   if (!buffer || old_count != count) {
-    void *resized = realloc(buffer, (size_t)(count ? count : 1) * size);
+    void *resized = realloc(buffer, (size_t)count * size);
     if (!resized)
       return false;
     buffer = resized;
@@ -1598,6 +1791,8 @@ static bool copy_buffer(void *buffer_ptr, int old_count, const void *src, int co
 #ifdef DDNET_PHYSICS_CHECK_COPY
 /* for tests: how many copies only copied what changed, and how much that was */
 long ddnet_copy_check_sparse, ddnet_copy_check_entries;
+/* (memcmp() of no bytes, of buffers that are NULL when empty) */
+static bool differs(const void *a, const void *b, size_t bytes) { return bytes && memcmp(a, b, bytes) != 0; }
 #endif
 
 bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
@@ -1608,15 +1803,19 @@ bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
    * the rest of it is overwritten, and a copy of all of it would double the
    * bytes a copy moves) */
   const struct {
-    ddnet_tuning_t *tuning;
-    ddnet_tuning_values_t *tuning_values;
+    ddnet_tune_block_t *tune_block;
     ddnet_switch_state_t *switch_states;
     bool *switch_initial;
+    ddnet_team_t *teams;
+    uint8_t *player_ids, *core_ids;
+    int *projectile_due, *busy_dragger_ids, *marked_entities;
+    uint16_t *timed_switches;
+    ddnet_pickup_mover_t *pickup_movers;
     ddnet_player_t *players;
     ddnet_character_t *characters;
     ddnet_entity_t *entities;
-    ddnet_dragger_targets_t *dragger_targets;
-    ddnet_gun_timers_t *gun_timers;
+    int *dragger_targets;
+    int *gun_timers;
     ddnet_projectile_memo_t *projectile_memo;
     ddnet_sight_memo_t *sight_memo;
     uint32_t *touch_log;
@@ -1626,51 +1825,80 @@ bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
     ddnet_parked_projectile_t *projectile_parked;
     uint64_t lineage, lineage_base, origin_lineage;
     int entity_capacity, client_capacity, projectile_awake_capacity, projectile_parked_capacity;
-    int num_clients, num_tune_zones, num_switchers, switch_teams, num_draggers, num_guns;
+    int num_clients, num_tune_zones, num_switchers, num_team_rows, num_dragger_targets, num_guns, num_pickup_movers;
+    int dragger_targets_room;
+    int table_teams, table_clients;
     int touch_count, origin_pos;
+    bool had_projectiles;
   } old = {
-      dst->tuning,
-      dst->tuning_values,
-      dst->switch_states,
-      dst->switch_initial,
-      dst->players,
-      dst->characters,
-      dst->entities,
-      dst->dragger_targets,
-      dst->gun_timers,
-      dst->projectile_memo,
-      dst->sight_memo,
-      dst->touch_log,
-      dst->laser_grid,
-      dst->laser_tiles,
-      dst->projectile_awake,
-      dst->projectile_parked,
-      dst->lineage,
-      dst->lineage_base,
-      dst->origin_lineage,
-      dst->entity_capacity,
-      dst->client_capacity,
-      dst->projectile_awake_capacity,
-      dst->projectile_parked_capacity,
-      dst->num_clients,
-      dst->num_tune_zones,
-      dst->num_switchers,
-      dst->switch_teams,
-      dst->num_draggers,
-      dst->num_guns,
-      dst->touch_count,
-      dst->origin_pos,
+      .tune_block = dst->tune_block,
+      .switch_states = dst->switch_states,
+      .switch_initial = dst->switch_initial,
+      .teams = dst->teams,
+      .player_ids = dst->player_ids,
+      .core_ids = dst->core_ids,
+      .projectile_due = dst->projectile_due,
+      .busy_dragger_ids = dst->busy_dragger_ids,
+      .marked_entities = dst->marked_entities,
+      .timed_switches = dst->timed_switches,
+      .pickup_movers = dst->pickup_movers,
+      .players = dst->players,
+      .characters = dst->characters,
+      .entities = dst->entities,
+      .dragger_targets = dst->dragger_targets,
+      .gun_timers = dst->gun_timers,
+      .projectile_memo = dst->projectile_memo,
+      .sight_memo = dst->sight_memo,
+      .touch_log = dst->touch_log,
+      .laser_grid = dst->laser_grid,
+      .laser_tiles = dst->laser_tiles,
+      .projectile_awake = dst->projectile_awake,
+      .projectile_parked = dst->projectile_parked,
+      .lineage = dst->lineage,
+      .lineage_base = dst->lineage_base,
+      .origin_lineage = dst->origin_lineage,
+      .entity_capacity = dst->entity_capacity,
+      .client_capacity = dst->client_capacity,
+      .projectile_awake_capacity = dst->projectile_awake_capacity,
+      .projectile_parked_capacity = dst->projectile_parked_capacity,
+      .num_clients = dst->num_clients,
+      .num_tune_zones = dst->num_tune_zones,
+      .num_switchers = dst->num_switchers,
+      .num_team_rows = dst->num_team_rows,
+      .num_dragger_targets = dst->num_dragger_targets,
+      .dragger_targets_room = dst->dragger_targets_room,
+      .num_guns = dst->num_guns,
+      .num_pickup_movers = dst->num_pickup_movers,
+      .table_teams = dst->table_teams,
+      .table_clients = dst->table_clients,
+      .touch_count = dst->touch_count,
+      .origin_pos = dst->origin_pos,
+      /* (an empty world, all 0, has no list of them) */
+      .had_projectiles = dst->projectile_due && dst->first_entity[DDNET_ENTTYPE_PROJECTILE] != -1,
   };
   *dst = *src;
-  dst->tuning = old.tuning;
-  dst->tuning_values = old.tuning_values;
+  /* the tune zones are shared, not copied (dst points to those of src now) */
+  if (src->tune_block != old.tune_block) {
+    if (src->tune_block)
+      __atomic_add_fetch(&src->tune_block->refs, 1, __ATOMIC_RELAXED);
+    tune_block_release(old.tune_block);
+  }
   dst->switch_states = old.switch_states;
   dst->switch_initial = old.switch_initial;
+  dst->teams = old.teams;
+  dst->projectile_due = old.projectile_due;
+  dst->busy_dragger_ids = old.busy_dragger_ids;
+  dst->marked_entities = old.marked_entities;
+  dst->timed_switches = old.timed_switches;
+  dst->pickup_movers = old.pickup_movers;
   dst->players = old.players;
+  dst->player_ids = old.player_ids;
+  dst->core_ids = old.core_ids;
   dst->characters = old.characters;
   dst->entities = old.entities;
   dst->entity_capacity = old.entity_capacity;
   dst->dragger_targets = old.dragger_targets;
+  dst->dragger_targets_room = old.dragger_targets_room;
   dst->gun_timers = old.gun_timers;
   dst->projectile_memo = old.projectile_memo;
   dst->sight_memo = old.sight_memo;
@@ -1683,24 +1911,76 @@ bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
   dst->projectile_awake_capacity = old.projectile_awake_capacity;
   dst->projectile_parked = old.projectile_parked;
   dst->projectile_parked_capacity = old.projectile_parked_capacity;
+  /* (from here on dst holds only buffers of its own, which a failure frees) */
 
+  /* (small, and copied whichever way the rest is: the teams tees are in, and
+   * the pickups on conveyors, which are the same in all copies) */
+  if (!copy_buffer(&dst->teams, old.num_team_rows, src->teams, src->num_team_rows, sizeof(*dst->teams)) ||
+      !copy_buffer(&dst->pickup_movers, old.num_pickup_movers, src->pickup_movers, src->num_pickup_movers,
+                   sizeof(*dst->pickup_movers)))
+    goto fail;
+  /* The lists that are full only now and then: dst keeps its own buffer once
+   * it has one, and gets what src has in it (the marked entities are empty
+   * between ticks). */
+  if (src->first_entity[DDNET_ENTTYPE_PROJECTILE] != -1) {
+    if (!dst->projectile_due &&
+        !(dst->projectile_due = malloc(DDNET_PROJECTILE_DUE_SIZE * sizeof(*dst->projectile_due))))
+      goto fail;
+    memcpy(dst->projectile_due, src->projectile_due, DDNET_PROJECTILE_DUE_SIZE * sizeof(*dst->projectile_due));
+  } else if (old.had_projectiles) {
+    /* (empty, as it is without projectiles) */
+    memset(dst->projectile_due, 0xff, DDNET_PROJECTILE_DUE_SIZE * sizeof(*dst->projectile_due));
+  }
+  if (src->num_timed_switches && !src->timed_switches_overflow) {
+    if (!dst->timed_switches &&
+        !(dst->timed_switches = malloc(DDNET_MAX_TIMED_SWITCHES * sizeof(*dst->timed_switches))))
+      goto fail;
+    memcpy(dst->timed_switches, src->timed_switches, (size_t)src->num_timed_switches * sizeof(*dst->timed_switches));
+  }
+  if (src->num_marked_entities > 0 && src->num_marked_entities <= DDNET_MAX_MARKED_ENTITIES) {
+    if (!dst->marked_entities &&
+        !(dst->marked_entities = malloc(DDNET_MAX_MARKED_ENTITIES * sizeof(*dst->marked_entities))))
+      goto fail;
+    memcpy(dst->marked_entities, src->marked_entities,
+           (size_t)src->num_marked_entities * sizeof(*dst->marked_entities));
+  }
+  /* The tables of the busy draggers, all of them (they are few, and their
+   * number changes as draggers get busy and idle again). */
+  const int dragger_ints = src->num_dragger_targets * dragger_table_size(src);
+  if (dragger_ints > dst->dragger_targets_room) {
+    int *tables = realloc(dst->dragger_targets, (size_t)dragger_ints * sizeof(*tables));
+    if (!tables)
+      goto fail;
+    dst->dragger_targets = tables;
+    dst->dragger_targets_room = dragger_ints;
+  }
+  if (dragger_ints)
+    memcpy(dst->dragger_targets, src->dragger_targets, (size_t)dragger_ints * sizeof(*dst->dragger_targets));
+  if (src->busy_draggers && !src->busy_draggers_overflow) {
+    if (!dst->busy_dragger_ids &&
+        !(dst->busy_dragger_ids = malloc(DDNET_MAX_BUSY_DRAGGERS * sizeof(*dst->busy_dragger_ids))))
+      goto fail;
+    memcpy(dst->busy_dragger_ids, src->busy_dragger_ids, (size_t)src->busy_draggers * sizeof(*dst->busy_dragger_ids));
+  }
+
+  /* (room for what src has, as for the entities below) */
   if (dst->projectile_awake_capacity < src->num_projectile_awake) {
-    int *awake = realloc(dst->projectile_awake, (size_t)src->projectile_awake_capacity * sizeof(*awake));
+    int *awake = realloc(dst->projectile_awake, (size_t)src->num_projectile_awake * sizeof(*awake));
     if (!awake)
       goto fail;
     dst->projectile_awake = awake;
-    dst->projectile_awake_capacity = src->projectile_awake_capacity;
+    dst->projectile_awake_capacity = src->num_projectile_awake;
   }
   if (src->num_projectile_awake)
     memcpy(dst->projectile_awake, src->projectile_awake,
            (size_t)src->num_projectile_awake * sizeof(*dst->projectile_awake));
   if (dst->projectile_parked_capacity < src->num_projectile_parked) {
     ddnet_parked_projectile_t *parked =
-        realloc(dst->projectile_parked, (size_t)src->projectile_parked_capacity * sizeof(*parked));
+        realloc(dst->projectile_parked, (size_t)src->num_projectile_parked * sizeof(*parked));
     if (!parked)
       goto fail;
     dst->projectile_parked = parked;
-    dst->projectile_parked_capacity = src->projectile_parked_capacity;
+    dst->projectile_parked_capacity = src->num_projectile_parked;
   }
 
   /* the same for all copies of a world: shared, not copied */
@@ -1718,6 +1998,8 @@ bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
    * used are emptied. */
   memcpy(dst->players, src->players, (size_t)src->num_clients * sizeof(*dst->players));
   memcpy(dst->characters, src->characters, (size_t)src->num_clients * sizeof(*dst->characters));
+  memcpy(dst->player_ids, src->player_ids, (size_t)src->num_players);
+  memcpy(dst->core_ids, src->core_ids, (size_t)src->num_cores);
   if (old.num_clients > src->num_clients)
     memset(&dst->players[src->num_clients], 0,
            (size_t)(old.num_clients - src->num_clients) * sizeof(*dst->players));
@@ -1740,9 +2022,10 @@ bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
    * - src was copied from dst and did not change: what dst changed since. */
   int src_from = 0, src_to = 0, dst_from = 0, dst_to = 0;
   bool sparse = false;
-  if (old.tuning && old.num_tune_zones == src->num_tune_zones && old.num_switchers == src->num_switchers &&
-      old.switch_teams == src->switch_teams &&
-      old.num_draggers == src->num_draggers && old.num_guns == src->num_guns && src->lineage && old.lineage) {
+  if (old.tune_block && old.num_switchers == src->num_switchers &&
+      old.num_team_rows == src->num_team_rows &&
+      old.num_guns == src->num_guns &&
+      old.table_teams == src->table_teams && old.table_clients == src->table_clients && src->lineage && old.lineage) {
     if (old.origin_lineage == src->lineage && old.origin_pos <= src->touch_count) {
       sparse = true;
       /* (and the entry before, see world_touch()) */
@@ -1773,11 +2056,13 @@ bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
           dst->switch_states[index] = src->switch_states[index];
           break;
         case TOUCH_DRAGGER_TARGETS:
-          dst->dragger_targets[index] = src->dragger_targets[index];
-          break;
-        case TOUCH_GUN_TIMERS:
-          dst->gun_timers[index] = src->gun_timers[index];
-          break;
+          break; /* (copied above, all of them) */
+        case TOUCH_GUN_TIMERS: {
+          /* (the row of a turret) */
+          const int stride = src->table_teams + src->table_clients;
+          memcpy(&dst->gun_timers[index * stride], &src->gun_timers[index * stride],
+                 (size_t)stride * sizeof(*dst->gun_timers));
+        } break;
         case TOUCH_PARKED:
           parked_changed = true;
           break;
@@ -1794,18 +2079,16 @@ bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
       memcpy(dst->projectile_parked, src->projectile_parked,
              (size_t)src->num_projectile_parked * sizeof(*dst->projectile_parked));
 #ifdef DDNET_PHYSICS_CHECK_COPY
-    if (memcmp(dst->projectile_parked, src->projectile_parked,
+    if (differs(dst->projectile_parked, src->projectile_parked,
                (size_t)src->num_projectile_parked * sizeof(*dst->projectile_parked)) ||
-        memcmp(dst->tuning, src->tuning, (size_t)src->num_tune_zones * sizeof(*dst->tuning)) ||
-        memcmp(dst->tuning_values, src->tuning_values,
-               (size_t)src->num_tune_zones * sizeof(*dst->tuning_values)) ||
-        memcmp(dst->switch_states, src->switch_states,
-               (size_t)src->switch_teams * src->num_switchers * sizeof(*dst->switch_states)) ||
-        memcmp(dst->switch_initial, src->switch_initial, (size_t)src->num_switchers) ||
-        memcmp(dst->dragger_targets, src->dragger_targets,
-               (size_t)src->num_draggers * sizeof(*dst->dragger_targets)) ||
-        memcmp(dst->gun_timers, src->gun_timers, (size_t)src->num_guns * sizeof(*dst->gun_timers)) ||
-        memcmp(dst->entities, src->entities, (size_t)src->num_entities * sizeof(*dst->entities))) {
+        differs(dst->switch_states, src->switch_states,
+               (size_t)src->num_team_rows * src->num_switchers * sizeof(*dst->switch_states)) ||
+        differs(dst->switch_initial, src->switch_initial, (size_t)src->num_switchers) ||
+        differs(dst->dragger_targets, src->dragger_targets,
+               (size_t)src->num_dragger_targets * dragger_table_size(src) * sizeof(*dst->dragger_targets)) ||
+        differs(dst->gun_timers, src->gun_timers,
+               (size_t)src->num_guns * (src->table_teams + src->table_clients) * sizeof(*dst->gun_timers)) ||
+        differs(dst->entities, src->entities, (size_t)src->num_entities * sizeof(*dst->entities))) {
       fprintf(stderr, "ddnet_world_copy: a copy of what changed is not a copy of everything\n");
       abort();
     }
@@ -1816,18 +2099,12 @@ bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
     if (src->num_projectile_parked)
       memcpy(dst->projectile_parked, src->projectile_parked,
              (size_t)src->num_projectile_parked * sizeof(*dst->projectile_parked));
-    if (!copy_buffer(&dst->tuning, old.num_tune_zones, src->tuning, src->num_tune_zones,
-                     sizeof(*dst->tuning)) ||
-        !copy_buffer(&dst->tuning_values, old.num_tune_zones, src->tuning_values, src->num_tune_zones,
-                     sizeof(*dst->tuning_values)) ||
-        !copy_buffer(&dst->switch_states, old.switch_teams * old.num_switchers, src->switch_states,
-                     src->switch_teams * src->num_switchers, sizeof(*dst->switch_states)) ||
+    if (!copy_buffer(&dst->switch_states, old.num_team_rows * old.num_switchers, src->switch_states,
+                     src->num_team_rows * src->num_switchers, sizeof(*dst->switch_states)) ||
         !copy_buffer(&dst->switch_initial, old.num_switchers, src->switch_initial, src->num_switchers,
                      sizeof(*dst->switch_initial)) ||
-        !copy_buffer(&dst->dragger_targets, old.num_draggers, src->dragger_targets, src->num_draggers,
-                     sizeof(*dst->dragger_targets)) ||
-        !copy_buffer(&dst->gun_timers, old.num_guns, src->gun_timers, src->num_guns,
-                     sizeof(*dst->gun_timers))) {
+        !copy_buffer(&dst->gun_timers, old.num_guns * (old.table_teams + old.table_clients), src->gun_timers,
+                     src->num_guns * (src->table_teams + src->table_clients), sizeof(*dst->gun_timers))) {
       goto fail;
     }
   }

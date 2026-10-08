@@ -3,8 +3,6 @@ project(ddnet_physics C)
 
 option(DDNET_PHYSICS_BUILD_TESTS "Build the tests and the oracle comparison tool" ON)
 option(DDNET_PHYSICS_BUILD_EXAMPLES "Build the examples" ON)
-set(DDNET_MAX_CLIENTS 128 CACHE STRING
-    "Number of player slots. 128 is what DDNet uses; smaller worlds are smaller to copy.")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
@@ -123,7 +121,7 @@ target_include_directories(ddnet_physics PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 target_compile_definitions(ddnet_physics PUBLIC
-  ${DDNET_PHYSICS_BACKEND_DEFINITION} ${DDNET_PHYSICS_EVENTS_DEFINITION} DDNET_MAX_CLIENTS=${DDNET_MAX_CLIENTS})
+  ${DDNET_PHYSICS_BACKEND_DEFINITION} ${DDNET_PHYSICS_EVENTS_DEFINITION})
 target_link_libraries(ddnet_physics PUBLIC ddnet_map_loader PRIVATE ddnet_physics_options m)
 set_target_properties(ddnet_physics PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 

@@ -10,7 +10,6 @@
 #define character_increase_health ddnet_ev__character_increase_health
 #define character_is_grounded ddnet_ev__character_is_grounded
 #define character_on_direct_input ddnet_ev__character_on_direct_input
-#define character_on_predicted_input ddnet_ev__character_on_predicted_input
 #define character_pause ddnet_ev__character_pause
 #define character_pre_tick ddnet_ev__character_pre_tick
 #define character_release_hook ddnet_ev__character_release_hook
@@ -102,6 +101,8 @@
 #define ddnet_collision_move_box ddnet_ev_collision_move_box
 #define ddnet_collision_move_point ddnet_ev_collision_move_point
 #define ddnet_collision_test_box ddnet_ev_collision_test_box
+#define ddnet_dragger_beam ddnet_ev_dragger_beam
+#define ddnet_dragger_target ddnet_ev_dragger_target
 #define ddnet_player_join ddnet_ev_player_join
 #define ddnet_player_kill ddnet_ev_player_kill
 #define ddnet_player_leave ddnet_ev_player_leave
@@ -113,9 +114,13 @@
 #define ddnet_world_copy ddnet_ev_world_copy
 #define ddnet_world_free ddnet_ev_world_free
 #define ddnet_world_init ddnet_ev_world_init
+#define ddnet_world_lock_team ddnet_ev_world_lock_team
+#define ddnet_world_switch ddnet_ev_world_switch
 #define ddnet_world_sync ddnet_ev_world_sync
+#define ddnet_world_team ddnet_ev_world_team
 #define ddnet_world_tick ddnet_ev_world_tick
 #define ddnet_world_tuning_changed ddnet_ev_world_tuning_changed
+#define ddnet_world_tuning_edit ddnet_ev_world_tuning_edit
 #define dragger_create ddnet_ev__dragger_create
 #define entity_owner_id ddnet_ev__entity_owner_id
 #define entity_tick ddnet_ev__entity_tick
@@ -139,6 +144,8 @@
 #define projectiles_forget_orbits ddnet_ev__projectiles_forget_orbits
 #define projectiles_sync ddnet_ev__projectiles_sync
 #define projectiles_tick ddnet_ev__projectiles_tick
+#define team_row_get ddnet_ev__team_row_get
+#define team_row_make ddnet_ev__team_row_make
 #define teams_can_keep_hook ddnet_ev__teams_can_keep_hook
 #define teams_check_team_finished ddnet_ev__teams_check_team_finished
 #define teams_get_solo ddnet_ev__teams_get_solo
@@ -149,6 +156,7 @@
 #define teams_on_character_start ddnet_ev__teams_on_character_start
 #define teams_reset ddnet_ev__teams_reset
 #define teams_reset_switchers ddnet_ev__teams_reset_switchers
+#define teams_row_unneeded ddnet_ev__teams_row_unneeded
 #define teams_set_force_character_team ddnet_ev__teams_set_force_character_team
 #define teams_set_team_lock ddnet_ev__teams_set_team_lock
 #define teams_team_locked ddnet_ev__teams_team_locked
@@ -168,7 +176,6 @@
 #define world_release_hooked ddnet_ev__world_release_hooked
 #define world_remove_entities_from_player ddnet_ev__world_remove_entities_from_player
 #define world_remove_entity ddnet_ev__world_remove_entity
-#define world_switch_grow ddnet_ev__world_switch_grow
 #define world_switch_timer_started ddnet_ev__world_switch_timer_started
-#define world_switch_write ddnet_ev__world_switch_write
+#define world_tables_grow ddnet_ev__world_tables_grow
 #define world_touch_reset ddnet_ev__world_touch_reset

@@ -69,10 +69,17 @@ typedef struct ddnet_character_core_t {
   int jumped_total; /* jumps performed in the air */
   int jumps;        /* number of jumps the tee has */
   int direction;
-  /* The angle is not stored, see ddnet_character_angle(). It follows from the
-   * input once the core has ticked. */
-  bool has_ticked;
+  /* The input of the tee: the last one it took (DDNet keeps it four times, in
+   * CCharacter's m_SavedInput, m_LatestInput, m_LatestPrevInput and m_Input,
+   * and in the core's m_Input, which hold the same between two inputs, except
+   * for the moves a frozen tee cannot make: the core leaves those out). */
   ddnet_input_t input;
+  /* The aim of the input of the last tick of the core (0, 0 before the
+   * first), which the angle follows from (it is not stored, see
+   * ddnet_character_angle()). It is not always the one of the input: DDNet
+   * takes the input of the tees that come after one that dies during its
+   * tick, but skips their tick. */
+  int aim_x, aim_y;
 
   int triggered_events;
 
@@ -127,11 +134,7 @@ typedef struct ddnet_character_t {
   int attack_tick;
   int move_restrictions;
 
-  ddnet_input_t latest_prev_input;
-  ddnet_input_t latest_input;
-  ddnet_input_t input;
-  ddnet_input_t saved_input;
-  int num_inputs;
+  int num_inputs; /* (the input is core.input) */
 
   int health;
   int armor;
@@ -196,6 +199,13 @@ typedef struct ddnet_character_t {
 /* CPlayer: a connected client, with or without a tee in the world. */
 typedef struct ddnet_player_t {
   bool active; /* slot is in use, see ddnet_player_join() */
+  /* CGameTeams of this client slot (it keeps them while nobody is connected
+   * on it): its ddrace team (put a player into one with
+   * ddnet_player_set_team()), whether it is in a solo part, and whether its
+   * tee went through the start line and the finish line of its team. */
+  uint8_t team; /* (its row in world->teams is team_row while the player is connected) */
+  bool is_solo;
+  bool tee_started;
 
   /* The input that is applied on the next ddnet_world_tick(). */
   ddnet_input_t input;
@@ -205,6 +215,7 @@ typedef struct ddnet_player_t {
 
   bool spawning;
   bool weak_hook_spawn; /* respawn after the others of a killed team, to get weak hook on them */
+  bool tee_finished;    /* (with team above) */
 
   int die_tick;
   int previous_die_tick;
@@ -212,6 +223,7 @@ typedef struct ddnet_player_t {
   ddnet_vec2_t view_pos;
   int tune_zone;
   bool ninja_jetpack;
+  uint8_t team_row;
 
   int paused;     /* DDNET_PAUSE_* */
   int last_pause; /* tick of the last change of paused */
@@ -223,24 +235,20 @@ typedef struct ddnet_player_t {
   int finish_time_ticks;
 } ddnet_player_t;
 
-/* CGameTeams: ddrace teams and their race progress.
- *
- * Tees of different teams do not interact and every team has its own switch
- * states. In team 0 every tee races for itself; a team with a number starts
- * and finishes together. Put a player into a team with ddnet_player_set_team()
- * and lock a team by setting team_locked. */
-typedef struct ddnet_teams_t {
-  /* (a byte each: a team number is below DDNET_NUM_TEAMS, and a world is copied
-   * as a whole, so what it holds for every client and team is kept small) */
-  uint8_t team[DDNET_MAX_CLIENTS];
-  bool is_solo[DDNET_MAX_CLIENTS];
-  bool tee_started[DDNET_MAX_CLIENTS]; /* went through the start line */
-  bool tee_finished[DDNET_MAX_CLIENTS];
-  uint8_t team_state[DDNET_NUM_TEAMS]; /* ddnet_team_state_t */
-  /* The tees of a locked team stay in it when they die, and all die together. */
-  bool team_locked[DDNET_NUM_TEAMS];
-  int team_unfinishable_kill_tick[DDNET_NUM_TEAMS];
-} ddnet_teams_t;
+/* CGameTeams of one ddrace team: tees of different teams do not interact and
+ * every team has its own switch states. In team 0 every tee races for itself;
+ * a team with a number starts and finishes together. Only the teams tees are
+ * in have one of these (see ddnet_world_t::teams); read one with
+ * ddnet_world_team(), lock one with ddnet_world_lock_team(). */
+typedef struct ddnet_team_t {
+  int kill_tick;  /* a team that cannot finish anymore is killed on this tick, -1 = none */
+  uint8_t number; /* which team this is (255: a row that no team has now, see ddnet_world_t::teams) */
+  uint8_t state;  /* ddnet_team_state_t */
+  bool locked;    /* its tees stay in it when they die, and all die together */
+  /* some switch of it may be in another state than a reset leaves it in (a
+   * reset of its switches has nothing to do otherwise) */
+  bool switches_touched;
+} ddnet_team_t;
 
 /* The state of one switch number for one team (DDNet's CSwitcher keeps one of
  * these per team in every switch number). Read it with ddnet_world_switch(). */
@@ -274,6 +282,8 @@ typedef enum ddnet_entity_kind_t {
   DDNET_ENTITY_LIGHT,
 } ddnet_entity_kind_t;
 
+/* (The small fields are bytes and at the end, without holes: with the header of
+ * an entity this is exactly two cache lines.) */
 typedef struct ddnet_projectile_t {
   ddnet_vec2_t direction;
   /* The tick on which the lifetime ends (DDNet counts m_LifeSpan down every tick). */
@@ -282,8 +292,6 @@ typedef struct ddnet_projectile_t {
   int next_tick;
   /* Until then it can only reach tees in this rectangle. */
   ddnet_vec2_t reach_min, reach_max;
-  /* false if next_tick is only as far as was looked, with nothing happening on it */
-  bool next_is_event;
   /* Projectiles are kept by the tick they have to be looked at on, see
    * ddnet_world_t::projectile_due: the tick this one is filed under (-1 =
    * none) and its neighbors there. seq orders them like the entity list. */
@@ -298,27 +306,28 @@ typedef struct ddnet_projectile_t {
   int orbit_period;
   int orbit_anchor_tick; /* from this tick on it is on the orbit */
   int orbit_retry_tick;
-  unsigned char orbit_tries;
-  bool orbit_uses_choice; /* it goes through a teleporter with several exits: the orbit is one for
-                             ddnet_world_t::tele_out as it is */
   /* A gun bullet whose owner is the only tee in the world does nothing to
    * anybody. As long as that is so it is not simulated at all (lazy), and
    * what happened to it since lazy_tick is worked out when it matters: when
    * another tee comes, its owner goes, or with ddnet_world_sync(). */
-  bool lazy;
   int lazy_tick;
-  bool parked;
   int set_slot; /* where it is in ddnet_world_t::projectile_awake or projectile_parked */
   int parked_tick;
   ddnet_vec2_t orbit_min, orbit_max;
   int owner;
-  int type; /* weapon */
   int start_tick;
+  int8_t type; /* weapon */
+  int8_t bouncing;
+  uint8_t tune_zone;
+  /* false if next_tick is only as far as was looked, with nothing happening on it */
+  bool next_is_event;
+  unsigned char orbit_tries;
+  bool orbit_uses_choice; /* it goes through a teleporter with several exits: the orbit is one for
+                             ddnet_world_t::tele_out as it is */
+  bool lazy;
+  bool parked;
   bool explosive;
-  int bouncing;
   bool freeze;
-  int tune_zone;
-
 } ddnet_projectile_t;
 
 /* Who a laser may hit, remembered from when its owner was last connected. */
@@ -362,7 +371,9 @@ typedef struct ddnet_dragger_t {
   float strength;
   bool ignore_walls;
   int eval_tick; /* not kept (only the creation tick): DDNet only sends it to old clients */
-  int targets;   /* index into world->dragger_targets */
+  /* index into world->dragger_targets while it has a target or beam, -1 while
+   * it is idle (read them with ddnet_dragger_target() and ddnet_dragger_beam()) */
+  int targets;
   /* no targets and no beams: nothing to do while no tee is in range */
   bool idle;
   ddnet_sight_t sight; /* what is known about its line of sight */
@@ -383,7 +394,7 @@ typedef struct ddnet_gun_t {
   bool freeze;
   bool explosive;
   int eval_tick;       /* not kept (only the creation tick): DDNet only sends it to old clients */
-  int timers;          /* index into world->gun_timers */
+  int timers;          /* which turret it is: its row of world->gun_timers */
   ddnet_sight_t sight; /* what is known about its line of sight */
 } ddnet_gun_t;
 
@@ -414,13 +425,15 @@ typedef struct ddnet_light_t {
   int last_tick;
 } ddnet_light_t;
 
+/* (Bytes where they do: a world has many entities, and copies them all. 128
+ * bytes, two cache lines.) */
 typedef struct ddnet_entity_t {
-  ddnet_entity_kind_t kind;
   ddnet_entity_link_t link; /* other entities of the same list, by entity index */
-  bool marked_for_destroy;
   ddnet_vec2_t pos;
-  int layer;  /* map layer the entity was placed in */
-  int number; /* switch number, 0 = not switched */
+  uint8_t kind; /* ddnet_entity_kind_t */
+  bool marked_for_destroy;
+  uint8_t layer;  /* map layer the entity was placed in */
+  uint8_t number; /* switch number (of the switch layer, a byte there), 0 = not switched */
   union {
     ddnet_projectile_t projectile;
     ddnet_laser_t laser;
@@ -432,18 +445,6 @@ typedef struct ddnet_entity_t {
     ddnet_light_t light;
   } u;
 } ddnet_entity_t;
-
-/* Per player state of a dragger. */
-typedef struct ddnet_dragger_targets_t {
-  int target_id_in_team[DDNET_MAX_CLIENTS];
-  int beam[DDNET_MAX_CLIENTS]; /* entity index of the beam on that player, -1 = none */
-} ddnet_dragger_targets_t;
-
-/* Per player state of a turret. */
-typedef struct ddnet_gun_timers_t {
-  int last_fire_team[DDNET_MAX_CLIENTS];
-  int last_fire_solo[DDNET_MAX_CLIENTS];
-} ddnet_gun_timers_t;
 
 /* Position inside an entity list: list and index (client id for characters). */
 typedef struct ddnet_entity_ref_t {
@@ -491,6 +492,17 @@ typedef struct ddnet_parked_projectile_t {
   int index;
 } ddnet_parked_projectile_t;
 
+/* The tune zones of a world and the floats worked out from them, in one block
+ * that copies of the world share: the tuning only changes with
+ * ddnet_world_tuning_edit(), which gives a world a block of its own first.
+ * num_tune_zones ddnet_tuning_values_t follow it (aligned as malloc aligns),
+ * then as many ddnet_tuning_t. */
+typedef struct ddnet_tune_block_t {
+  int refs; /* the worlds that hold it (the last one frees it) */
+  int count;
+  int64_t padding;
+} ddnet_tune_block_t;
+
 /* The turrets, draggers and laser walls of the map that can have a tee in
  * their range, by where the tee is: the map in cells of
  * DDNET_LASER_GRID_CELL tiles, and for every cell the entities whose range
@@ -525,6 +537,10 @@ typedef struct ddnet_laser_tile_t {
 } ddnet_laser_tile_t;
 enum { DDNET_PROJECTILE_DUE_SIZE = 128 };
 enum { DDNET_MAX_PICKUP_MOVERS = 32 };
+/* A pickup on a conveyor (see ddnet_world_t::pickup_movers): its entity, and which pickup of the map it is. */
+typedef struct ddnet_pickup_mover_t {
+  int index, id;
+} ddnet_pickup_mover_t;
 enum { DDNET_MAX_BUSY_DRAGGERS = 32 };
 enum { DDNET_MAX_MARKED_ENTITIES = 16 };
 
@@ -538,21 +554,34 @@ typedef struct ddnet_world_t {
    * (the bullets of map shotguns). */
   int tele_out;
 
-  /* Tune zones, [0] is the global tuning. */
+  /* Tune zones, [0] is the global tuning. Both arrays are in tune_block,
+   * which a world shares with its copies: write to the tuning through
+   * ddnet_world_tuning_edit() only. */
   ddnet_tuning_t *tuning;
   ddnet_tuning_values_t *tuning_values; /* see ddnet_world_tuning_changed() */
   int num_tune_zones;
+  ddnet_tune_block_t *tune_block;
 
-  ddnet_teams_t teams;
+  /* The teams that somebody is in, a row each (which number a team has makes
+   * no difference to that: a team takes a free row or a new one). A team
+   * without a row is as if nobody had ever been in it: empty, not locked, no
+   * kill tick, its switches as below. A row is freed when its team is left by
+   * the last tee and nothing of the team can make a difference anymore (see
+   * teams.c); num_team_rows counts the free ones too. */
+  ddnet_team_t *teams;
+  int num_team_rows;
+  /* how teams_reset() left the client slots that nobody used yet: a team of
+   * their own each (sv_team forced solo then), or team 0 */
+  bool slots_forced_solo;
 
-  /* The switches, by team and then by switch number: switch_states[team *
-   * num_switchers + number], for the teams below switch_teams. A team gets its
-   * row when something is written to one of its switches; until then all of
-   * them are as the map starts them (status true, the rest 0). DDNet keeps
-   * every team of every switch number, which is a kilobyte and more per number
-   * for the few teams that are used. */
+  /* The switches of the teams with rows, by row and then by switch number:
+   * switch_states[row * num_switchers + number]. A team without a row has all
+   * its switches as the map starts them (status true, the rest 0), or as a
+   * reset leaves them (status switch_initial, type open) if
+   * rowless_switches_reset; rowless_switches_touched is switches_touched of
+   * the teams without a row. */
   ddnet_switch_state_t *switch_states;
-  int switch_teams;
+  bool rowless_switches_reset, rowless_switches_touched;
   bool *switch_initial; /* by switch number: what a reset of a team sets its status to */
   int num_switchers;    /* 0, or highest switch number + 1 */
 
@@ -566,31 +595,35 @@ typedef struct ddnet_world_t {
 
   /* Client ids in ascending order, so that nothing has to scan all slots:
    * the connected players, and the tees that take part in the physics (alive
-   * and not taken out by /spec). */
+   * and not taken out by /spec). Room for client_capacity each, behind the
+   * players in their allocation. */
   int num_players;
-  uint8_t player_ids[DDNET_MAX_CLIENTS];
+  uint8_t *player_ids;
   int num_cores;
-  uint8_t core_ids[DDNET_MAX_CLIENTS];
+  uint8_t *core_ids;
 
-  /* Switches of a team that are waiting for their timer, as number << 8 | team. */
+  /* Switches of a team that are waiting for their timer, as number << 8 | team
+   * row (a switch number is below 256, see num_switchers). */
   int num_timed_switches;
-  int timed_switches[DDNET_MAX_TIMED_SWITCHES];
+  uint16_t *timed_switches; /* [DDNET_MAX_TIMED_SWITCHES] from the first timer on, NULL before */
   bool timed_switches_overflow; /* more than fit: all switches are scanned */
-  /* Per team: some switch may be in another state than a reset leaves it in
-   * (a reset of the switches of a team has nothing to do otherwise). */
-  bool switches_touched[DDNET_NUM_TEAMS];
   bool unfinishable_teams; /* some team may be waiting for its kill tick */
   bool entities_marked;    /* some entity is marked for destruction */
-  /* which ones, as long as they are few: more than fit means all entities are looked through */
+  /* which ones, as long as they are few: more than fit means all entities are
+   * looked through ([DDNET_MAX_MARKED_ENTITIES] from the first one on, NULL
+   * before; only used during a tick, not copied) */
   int num_marked_entities;
-  int marked_entities[DDNET_MAX_MARKED_ENTITIES];
+  int *marked_entities;
   /* 0: all projectiles have to be looked at on the next tick. Set by
    * everything that changes what matters to them: new projectiles, tees
    * entering or leaving the world, tuning changes. */
   int projectile_wakeup;
   /* The projectiles to look at on a tick, by tick modulo the size: the first
-   * entity of each list, -1 = none. Nothing is scheduled further ahead. */
-  int projectile_due[DDNET_PROJECTILE_DUE_SIZE];
+   * entity of each list, -1 = none. Nothing is scheduled further ahead.
+   * [DDNET_PROJECTILE_DUE_SIZE] from the first projectile on (NULL before).
+   * Without projectiles it is all -1, so a copy only copies it while there are
+   * projectiles (and empties it where it had some). */
+  int *projectile_due;
   unsigned projectile_seq;
   /* tele_out and config.sv_old_teleport_weapons as the orbits of the
    * projectiles were worked out with. Parked projectiles went through
@@ -633,16 +666,16 @@ typedef struct ddnet_world_t {
    * its index and which pickup of the map it is, the last of the map first.
    * pickups_generic: too many, or not as expected: all pickups tick like in DDNet. */
   int num_pickup_movers;
-  int pickup_movers[DDNET_MAX_PICKUP_MOVERS];
-  int pickup_mover_ids[DDNET_MAX_PICKUP_MOVERS];
+  ddnet_pickup_mover_t *pickup_movers; /* NULL if there are none, which is the usual */
   bool pickups_generic;
   int first_static_laser;
   ddnet_laser_grid_t *laser_grid;
   ddnet_laser_tile_t
       *laser_tiles; /* [DDNET_LASER_TILE_CACHE_SIZE], allocated when first needed, not copied */
   int busy_draggers;
-  /* ... and which, as long as they are not more than fit (busy_draggers_overflow) */
-  int busy_dragger_ids[DDNET_MAX_BUSY_DRAGGERS];
+  /* ... and which, as long as they are not more than fit (busy_draggers_overflow):
+   * [DDNET_MAX_BUSY_DRAGGERS] from the first one on, NULL before */
+  int *busy_dragger_ids;
   bool busy_draggers_overflow;
   /* set by the tick of a projectile: all it did was bounce off the map */
   bool projectile_only_bounced;
@@ -654,10 +687,26 @@ typedef struct ddnet_world_t {
   int entity_capacity;
   int first_free_entity; /* free slots are chained through link.next */
 
-  ddnet_dragger_targets_t *dragger_targets;
-  int num_draggers;
-  ddnet_gun_timers_t *gun_timers;
+  /* DDNet keeps, in every dragger and turret, something for every team and
+   * every client there can be. Here those are tables with room for
+   * table_teams team rows (see teams) and table_clients client slots:
+   *
+   * The targets and beams of the draggers that have some (a dragger takes a
+   * table when it gets a target or beam and gives it back when it has none
+   * left, all -1 again: most draggers have nobody in range). A table is the
+   * entity index of its dragger (-1 = free), the client id of the target of
+   * each team row, the entity index of the beam on each client (-1 = none);
+   * num_dragger_targets of them. Read them with ddnet_dragger_target() and
+   * ddnet_dragger_beam().
+   *
+   * When the turrets fired last (a tick): for each turret, by team row, then by
+   * client for solo players. */
+  int *dragger_targets;
+  int num_dragger_targets;  /* used and free */
+  int dragger_targets_room; /* ints allocated (a world keeps them, copies too) */
+  int *gun_timers;
   int num_guns;
+  int table_teams, table_clients;
 
   int first_entity[DDNET_NUM_ENTTYPES];
   ddnet_entity_ref_t next_traverse_entity;
@@ -680,12 +729,16 @@ typedef struct ddnet_world_t {
   bool pre_ticking_characters;
 } ddnet_world_t;
 
+/* The target of a dragger in a team and its beam on a player, -1 for none. */
+int ddnet_dragger_target(const ddnet_world_t *world, const ddnet_dragger_t *dragger, int team);
+int ddnet_dragger_beam(const ddnet_world_t *world, const ddnet_dragger_t *dragger, int client_id);
+
+/* A ddrace team (0 to DDNET_NUM_TEAMS - 1), as ddnet_team_t says. */
+ddnet_team_t ddnet_world_team(const ddnet_world_t *world, int team);
+/* Lock a team (not team 0) or unlock it. False if there is no memory for its row. */
+bool ddnet_world_lock_team(ddnet_world_t *world, int team, bool locked);
+
 /* The state of switch number `number` (1 to num_switchers - 1) for team `team`. */
-static inline ddnet_switch_state_t ddnet_world_switch(const ddnet_world_t *world, int number, int team) {
-  if (team < world->switch_teams)
-    return world->switch_states[team * world->num_switchers + number];
-  const ddnet_switch_state_t start = {0, 0, true, 0};
-  return start;
-}
+ddnet_switch_state_t ddnet_world_switch(const ddnet_world_t *world, int number, int team);
 
 #endif

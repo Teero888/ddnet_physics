@@ -3,23 +3,77 @@
  * per team switch states, and the race state machine of tees and teams.
  *
  * Chat messages, score saving, team invitations, swap requests, team 0 mode
- * and practice mode are left out. */
+ * and practice mode are left out.
+ *
+ * DDNet keeps everything of every team there can be, by team number. Here a
+ * team has a row in world->teams while somebody is in it (which number a team
+ * has does not matter for that), and the player of a client knows the row of
+ * its team. A team without a row is as nobody has ever been in it.
+ *
+ * When the last tee leaves a team, DDNet resets it to that, nearly: the row
+ * goes then, unless something would still be different for the next tee that
+ * joins it: team 0 is not reset when it empties (its switches stay as they
+ * are), a dragger can still aim at a tee "for" the team, or a turret still waits
+ * after firing at it. Such a row goes as soon as that is over and a team
+ * changes again (teams_release_rows()). */
 #include "internal.h"
 
 /* ------------------------------------------------------------ CTeamsCore */
 
 bool teams_can_keep_hook(const world_t *w, int client_id1, int client_id2) {
-  const uint8_t *team = w->teams.team;
   if (client_id1 == client_id2)
     return true;
-  return team[client_id1] == team[client_id2];
+  return teams_team(w, client_id1) == teams_team(w, client_id2);
 }
 
 bool teams_get_solo(const world_t *w, int client_id) {
-  if (client_id < 0 || client_id >= MAX_CLIENTS)
+  /* (a slot that nobody used is not solo) */
+  if (client_id < 0 || client_id >= w->num_clients)
     return false;
-  return w->teams.is_solo[client_id];
+  return w->players[client_id].is_solo;
 }
+
+/* ------------------------------------------------------------- the rows */
+
+int team_row_get(world_t *w, int team) {
+  const int row = team_row_find(w, team);
+  return row >= 0 ? row : team_row_make(w, team);
+}
+
+/* Whether the row of a team can go: nobody is in the team, and what DDNet
+ * would carry over to the next tee that joins it is what a team without a
+ * row gets too (see above). */
+bool teams_row_unneeded(const world_t *w, int row) {
+  const ddnet_team_t *team = &w->teams[row];
+  if (team->number == FREE_TEAM_ROW || team->state != DDNET_TEAMSTATE_EMPTY || team->locked || team->kill_tick != -1)
+    return false;
+  /* (a client that is not connected keeps its team, like in DDNet) */
+  for (int i = 0; i < w->num_clients; i++)
+    if (w->players[i].team == team->number)
+      return false;
+  /* The switches: a team without a row gets them reset when somebody joins
+   * it, this one too unless they were not touched since its last reset: as
+   * that left them then. (last_update_tick is not looked at by anything.) */
+  if (!team->switches_touched)
+    for (int s = 0; s < w->num_switchers; s++) {
+      const ddnet_switch_state_t *state = &w->switch_states[row * w->num_switchers + s];
+      if (state->status != w->switch_initial[s] || state->end_tick != 0 || state->type != TILE_SWITCHOPEN)
+        return false;
+    }
+  for (int t = 0; t < w->num_dragger_targets; t++)
+    if (dragger_table(w, t)[1 + row] != -1)
+      return false;
+  /* (a turret waits SERVER_TICK_SPEED / sv_plasma_per_sec ticks after it fired, at most a second) */
+  const int stride = w->table_teams + w->table_clients;
+  for (int g = 0; g < w->num_guns; g++) {
+    const int last = w->gun_timers[g * stride + row];
+    if (last != 0 && last + SERVER_TICK_SPEED > server_tick(w))
+      return false;
+  }
+  return true;
+}
+
+
 
 /* ------------------------------------------------------------ CGameTeams */
 
@@ -28,67 +82,84 @@ bool teams_is_valid_team_number(int team) { return team >= TEAM_FLOCK && team < 
 bool teams_team_locked(const world_t *w, int team) {
   if (team == TEAM_FLOCK || !teams_is_valid_team_number(team))
     return false;
-  return w->teams.team_locked[team];
+  const int row = team_row_find(w, team);
+  return row >= 0 && w->teams[row].locked;
 }
 
 void teams_set_team_lock(world_t *w, int team, bool lock) {
-  if (team != TEAM_FLOCK && teams_is_valid_team_number(team))
-    w->teams.team_locked[team] = lock;
+  if (team == TEAM_FLOCK || !teams_is_valid_team_number(team))
+    return;
+  /* (a team without a row is not locked) */
+  const int row = lock ? team_row_get(w, team) : team_row_find(w, team);
+  if (row >= 0)
+    w->teams[row].locked = lock;
+}
+
+/* How many client slots that nobody used yet are in a team (DDNet counts
+ * every slot): they are where teams_reset() put them. */
+static int teams_unused_slots_in(const world_t *w, int team) {
+  if (w->slots_forced_solo)
+    return team >= w->num_clients && team < MAX_CLIENTS;
+  return team == TEAM_FLOCK ? MAX_CLIENTS - w->num_clients : 0;
 }
 
 int teams_team_size(const world_t *w, int team) {
-  int count = 0;
-  for (int i = 0; i < MAX_CLIENTS; ++i)
+  int count = teams_unused_slots_in(w, team);
+  for (int i = 0; i < w->num_clients; ++i)
     if (teams_team(w, i) == team)
       count++;
-
   return count;
 }
 
-void teams_reset_switchers(world_t *w, int team) {
-  /* (they are like that already: nothing was written to them since the last time) */
-  if (!w->switches_touched[team])
-    return;
-  w->switches_touched[team] = false;
+/* The switches of a team that has its row (out of line: a team is reset on
+ * every spawn, and this is seldom more than the check before it). */
+DDNET_NOINLINE static void teams_reset_switch_row(world_t *w, int row) {
+  ddnet_switch_state_t *states = &w->switch_states[row * w->num_switchers];
   for (int i = 0; i < w->num_switchers; i++) {
     /* (only the ones that are not like that already are written to, and noted for ddnet_world_copy()) */
-    const ddnet_switch_state_t state = switch_state(w, i, team);
-    if (state.status == w->switch_initial[i] && state.end_tick == 0 && state.type == TILE_SWITCHOPEN)
+    if (states[i].status == w->switch_initial[i] && states[i].end_tick == 0 && states[i].type == TILE_SWITCHOPEN)
       continue;
-    ddnet_switch_state_t *switcher = world_switch_write(w, i, team);
-    if (!switcher)
-      continue;
-    switcher->status = w->switch_initial[i];
-    switcher->end_tick = 0;
-    switcher->type = TILE_SWITCHOPEN;
+    world_touch(w, TOUCH_SWITCHER, row * w->num_switchers + i);
+    states[i].status = w->switch_initial[i];
+    states[i].end_tick = 0;
+    states[i].type = TILE_SWITCHOPEN;
   }
 }
 
-static void teams_reset_round_state(world_t *w, int team) {
-  teams_reset_switchers(w, team);
-  w->teams.team_unfinishable_kill_tick[team] = -1;
+/* CGameTeams::ResetSwitchers of the team of a row */
+void teams_reset_switchers(world_t *w, int row) {
+  /* (they are like that already: nothing was written to them since the last time) */
+  if (!w->teams[row].switches_touched)
+    return;
+  w->teams[row].switches_touched = false;
+  teams_reset_switch_row(w, row);
 }
 
-/* CGameTeams::Reset and CTeamsCore::Reset */
+static void teams_reset_round_state(world_t *w, int row) {
+  teams_reset_switchers(w, row);
+  w->teams[row].kill_tick = -1;
+}
+
+/* CGameTeams::Reset and CTeamsCore::Reset, when the world is made */
 void teams_reset(world_t *w) {
-  teams_t *teams = &w->teams;
-  for (int i = 0; i < MAX_CLIENTS; ++i) {
-    if (w->config.sv_team == DDNET_SV_TEAM_FORCED_SOLO)
-      teams->team[i] = i;
-    else
-      teams->team[i] = TEAM_FLOCK;
-    teams->is_solo[i] = false;
+  w->slots_forced_solo = w->config.sv_team == DDNET_SV_TEAM_FORCED_SOLO;
+  for (int i = 0; i < w->client_capacity; ++i) {
+    player_t *slot = &w->players[i];
+    slot->team = w->slots_forced_solo ? i : TEAM_FLOCK;
+    slot->team_row = NO_TEAM_ROW;
+    slot->is_solo = false;
+    slot->tee_started = false;
+    slot->tee_finished = false;
   }
-
-  for (int i = 0; i < MAX_CLIENTS; ++i) {
-    teams->tee_started[i] = false;
-    teams->tee_finished[i] = false;
+  for (int row = 0; row < w->num_team_rows; ++row) {
+    w->teams[row].state = DDNET_TEAMSTATE_EMPTY;
+    w->teams[row].locked = false;
+    teams_reset_round_state(w, row);
   }
-
-  for (int i = 0; i < NUM_DDRACE_TEAMS; ++i) {
-    teams->team_state[i] = DDNET_TEAMSTATE_EMPTY;
-    teams->team_locked[i] = false;
-    teams_reset_round_state(w, i);
+  /* the switches of all the teams without a row at once */
+  if (w->rowless_switches_touched) {
+    w->rowless_switches_touched = false;
+    w->rowless_switches_reset = true;
   }
 }
 
@@ -125,7 +196,6 @@ static void teams_set_start_time(world_t *w, int client_id, int start_time) {
 
 /* CGameTeams::OnCharacterStart: a tee touched a start tile. */
 void teams_on_character_start(world_t *w, int client_id) {
-  teams_t *teams = &w->teams;
   const ddnet_config_t *config = &w->config;
   int tick = server_tick(w);
   character_t *starting_char = get_player_char(w, client_id);
@@ -138,7 +208,7 @@ void teams_on_character_start(world_t *w, int client_id) {
     return;
   if (config->sv_team != DDNET_SV_TEAM_FORCED_SOLO && teams_team(w, client_id) == TEAM_FLOCK) {
     /* team 0: every tee races for itself and can restart at any time */
-    teams->tee_started[client_id] = true;
+    w->players[client_id].tee_started = true;
     starting_char->race_state = DDNET_RACE_STARTED;
     starting_char->start_time = tick;
     return;
@@ -158,11 +228,12 @@ void teams_on_character_start(world_t *w, int client_id) {
   }
 
   if (!waiting)
-    teams->tee_started[client_id] = true;
+    w->players[client_id].tee_started = true;
 
-  if (teams->team_state[teams_team(w, client_id)] < DDNET_TEAMSTATE_STARTED && !waiting) {
-    teams->team_state[teams_team(w, client_id)] = DDNET_TEAMSTATE_STARTED;
-    teams->team_unfinishable_kill_tick[teams_team(w, client_id)] = -1;
+  ddnet_team_t *team = &w->teams[teams_team_row(w, client_id)];
+  if (team->state < DDNET_TEAMSTATE_STARTED && !waiting) {
+    team->state = DDNET_TEAMSTATE_STARTED;
+    team->kill_tick = -1;
 
     /* the whole team starts together */
     for (int i = 0; i < w->num_clients; ++i) {
@@ -194,28 +265,30 @@ static void teams_on_finish(world_t *w, int client_id, int time_ticks) {
   EMIT_PARTICLE(w, chr->pos, DDNET_PARTICLE_CONFETTI, client_id);
 }
 
-static bool teams_team_finished(const world_t *w, int team) {
-  if (w->teams.team_state[team] != DDNET_TEAMSTATE_STARTED)
+/* (row: the row the team has or had, which callers know; a row that went is empty) */
+static bool teams_team_finished(const world_t *w, int team, int row) {
+  if (w->teams[row].state != DDNET_TEAMSTATE_STARTED || w->teams[row].number != team)
     return false;
-
-  for (int i = 0; i < MAX_CLIENTS; ++i)
-    if (teams_team(w, i) == team && !w->teams.tee_finished[i])
+  /* (a slot that nobody used never finished) */
+  if (teams_unused_slots_in(w, team))
+    return false;
+  for (int i = 0; i < w->num_clients; ++i)
+    if (teams_team(w, i) == team && !w->players[i].tee_finished)
       return false;
   return true;
 }
 
 /* CGameTeams::CheckTeamFinished: a team finishes when all of its tees did. */
-void teams_check_team_finished(world_t *w, int team) {
-  teams_t *teams = &w->teams;
-  if (teams_team_finished(w, team)) {
+void teams_check_team_finished(world_t *w, int team, int row) {
+  if (teams_team_finished(w, team, row)) {
     int team_players[MAX_CLIENTS];
     unsigned int players_count = 0;
 
     for (int i = 0; i < w->num_clients; ++i) {
       if (team == teams_team(w, i)) {
         if (w->players[i].active && player_is_playing(w, i)) {
-          teams->tee_started[i] = false;
-          teams->tee_finished[i] = false;
+          w->players[i].tee_started = false;
+          w->players[i].tee_finished = false;
 
           team_players[players_count++] = i;
         }
@@ -229,14 +302,15 @@ void teams_check_team_finished(world_t *w, int team) {
 
       for (unsigned int i = 0; i < players_count; ++i)
         teams_on_finish(w, team_players[i], time_ticks);
-      teams->team_state[team] = DDNET_TEAMSTATE_FINISHED; /* TODO: Make it better */
+      /* (it has a row: it started) */
+      w->teams[row].state = DDNET_TEAMSTATE_FINISHED; /* TODO: Make it better */
 
       /* CGameTeams::OnTeamFinish: unlocked teams go back to team 0 */
       for (unsigned int i = 0; i < players_count; i++) {
         const int client_id = team_players[i];
         if (w->config.sv_rejoin_team_0 && w->config.sv_team != DDNET_SV_TEAM_FORCED_SOLO &&
             (!teams_is_valid_team_number(teams_team(w, client_id)) ||
-             !teams->team_locked[teams_team(w, client_id)]))
+             !teams_team_locked(w, teams_team(w, client_id))))
           teams_set_force_character_team(w, client_id, TEAM_FLOCK);
       }
     }
@@ -245,7 +319,6 @@ void teams_check_team_finished(world_t *w, int team) {
 
 /* CGameTeams::OnCharacterFinish: a tee touched a finish tile. */
 void teams_on_character_finish(world_t *w, int client_id) {
-  teams_t *teams = &w->teams;
   if (teams_team(w, client_id) == TEAM_FLOCK && w->config.sv_team != DDNET_SV_TEAM_FORCED_SOLO) {
     if (w->players[client_id].active && player_is_playing(w, client_id)) {
       int time_ticks = server_tick(w) - teams_get_start_time(w, client_id);
@@ -254,44 +327,56 @@ void teams_on_character_finish(world_t *w, int client_id) {
       teams_on_finish(w, client_id, time_ticks);
     }
   } else {
-    if (teams->tee_started[client_id])
-      teams->tee_finished[client_id] = true;
-    teams_check_team_finished(w, teams_team(w, client_id));
+    if (w->players[client_id].tee_started)
+      w->players[client_id].tee_finished = true;
+    teams_check_team_finished(w, teams_team(w, client_id), teams_team_row(w, client_id));
   }
 }
 
 /* CGameTeams::SetForceCharacterTeam */
 void teams_set_force_character_team(world_t *w, int client_id, int team) {
-  /* (no memory for the switches of the team: the player stays where it is) */
-  if (!world_switch_reserve(w, team))
+  /* The rows of both teams (no memory for one of them: the player stays where
+   * it is). The one it is in first: a new row can free rows of teams nobody
+   * is in, and the new team has nobody in it yet. */
+  const int old_team = teams_team(w, client_id);
+  /* (a connected player knows its row; respawning puts it into the team it is in) */
+  const int known = w->players[client_id].team_row;
+  const int old_row = known != NO_TEAM_ROW && w->teams[known].number == old_team ? known : team_row_get(w, old_team);
+  if (old_row < 0)
     return;
-  teams_t *teams = &w->teams;
-  teams->tee_started[client_id] = false;
-  teams->tee_finished[client_id] = false;
-  int old_team = teams_team(w, client_id);
+  const int row = team == old_team ? old_row : team_row_get(w, team);
+  if (row < 0)
+    return;
+  player_t *player = &w->players[client_id];
+  player->tee_started = false;
+  player->tee_finished = false;
 
   if (team != old_team && (old_team != TEAM_FLOCK || w->config.sv_team == DDNET_SV_TEAM_FORCED_SOLO) &&
-      teams->team_state[old_team] != DDNET_TEAMSTATE_EMPTY) {
+      w->teams[old_row].state != DDNET_TEAMSTATE_EMPTY) {
     bool no_else_in_old_team = teams_team_size(w, old_team) <= 1;
     if (no_else_in_old_team) {
-      teams->team_state[old_team] = DDNET_TEAMSTATE_EMPTY;
+      w->teams[old_row].state = DDNET_TEAMSTATE_EMPTY;
 
       /* unlock team when last player leaves */
       teams_set_team_lock(w, old_team, false);
-      teams_reset_round_state(w, old_team);
+      teams_reset_round_state(w, old_row);
     }
   }
 
-  teams->team[client_id] = team;
+  player->team = team;
+  player->team_row = row;
 
   if (old_team != team)
     world_remove_entities_from_player(w, client_id);
+  /* (the team it left may have nobody in it now) */
+  if (old_team != team && teams_row_unneeded(w, old_row))
+    w->teams[old_row].number = FREE_TEAM_ROW;
 
-  if (teams->team_state[team] == DDNET_TEAMSTATE_EMPTY || teams->team_locked[team]) {
-    if (!teams->team_locked[team])
-      teams->team_state[team] = DDNET_TEAMSTATE_OPEN;
+  if (w->teams[row].state == DDNET_TEAMSTATE_EMPTY || w->teams[row].locked) {
+    if (!w->teams[row].locked)
+      w->teams[row].state = DDNET_TEAMSTATE_OPEN;
 
-    teams_reset_switchers(w, team);
+    teams_reset_switchers(w, row);
   }
 }
 
@@ -310,36 +395,36 @@ static void teams_kill_team(world_t *w, int team, int new_strong_id, int except_
 
 /* CGameTeams::OnCharacterSpawn */
 void teams_on_character_spawn(world_t *w, int client_id) {
-  teams_t *teams = &w->teams;
-  teams->is_solo[client_id] = false;
+  w->players[client_id].is_solo = false;
   int team = teams_team(w, client_id);
+  const int row = teams_team_row(w, client_id);
 
-  if (!teams_is_valid_team_number(team) || !teams->team_locked[team]) {
+  if (!teams_is_valid_team_number(team) || !teams_team_locked(w, team)) {
     if (w->config.sv_team != DDNET_SV_TEAM_FORCED_SOLO)
       teams_set_force_character_team(w, client_id, TEAM_FLOCK);
     else
       teams_set_force_character_team(w, client_id, client_id); /* initialize team */
-    teams_check_team_finished(w, team);
+    teams_check_team_finished(w, team, row);
   }
 }
 
 /* CGameTeams::OnCharacterDeath */
 void teams_on_character_death(world_t *w, int client_id, int weapon) {
-  teams_t *teams = &w->teams;
   const ddnet_config_t *config = &w->config;
-  teams->is_solo[client_id] = false;
+  w->players[client_id].is_solo = false;
 
   int team = teams_team(w, client_id);
+  const int row = teams_team_row(w, client_id);
   bool locked = teams_team_locked(w, team) && weapon != WEAPON_GAME;
 
   if (config->sv_team == DDNET_SV_TEAM_FORCED_SOLO) {
-    teams->team_state[team] = DDNET_TEAMSTATE_OPEN;
-    teams_reset_round_state(w, team);
+    w->teams[row].state = DDNET_TEAMSTATE_OPEN;
+    teams_reset_round_state(w, row);
   } else if (locked) {
     teams_set_force_character_team(w, client_id, team);
 
-    if (teams->team_state[team] != DDNET_TEAMSTATE_OPEN) {
-      teams->team_state[team] = DDNET_TEAMSTATE_OPEN;
+    if (w->teams[row].state != DDNET_TEAMSTATE_OPEN) {
+      w->teams[row].state = DDNET_TEAMSTATE_OPEN;
 
       if (!config->sv_pauseable) {
         for (int client_id1 = 0; client_id1 < w->num_clients; client_id1++) {
@@ -363,35 +448,44 @@ void teams_on_character_death(world_t *w, int client_id, int weapon) {
       }
     }
   } else {
-    if (teams->team_state[teams_team(w, client_id)] == DDNET_TEAMSTATE_STARTED &&
-        !teams->tee_started[client_id]) {
+    if (w->teams[row].state == DDNET_TEAMSTATE_STARTED && !w->players[client_id].tee_started) {
       /* The team cannot finish anymore because a tee left before hitting the
        * start. On a server it would have 60 seconds to enter practice mode. */
-      teams->team_unfinishable_kill_tick[team] = server_tick(w) + 60 * SERVER_TICK_SPEED;
+      w->teams[row].kill_tick = server_tick(w) + 60 * SERVER_TICK_SPEED;
       w->unfinishable_teams = true;
-      teams->team_state[team] = DDNET_TEAMSTATE_STARTED_UNFINISHABLE;
+      w->teams[row].state = DDNET_TEAMSTATE_STARTED_UNFINISHABLE;
     }
     teams_set_force_character_team(w, client_id, TEAM_FLOCK);
-    teams_check_team_finished(w, team);
+    teams_check_team_finished(w, team, row);
   }
 }
 
 /* CGameTeams::Tick */
 void teams_tick(world_t *w) {
-  teams_t *teams = &w->teams;
   int now = server_tick(w);
 
-  bool any = false;
-  for (int i = 0; i < NUM_DDRACE_TEAMS; i++) {
-    if (teams->team_unfinishable_kill_tick[i] == -1)
+  /* The teams with a kill tick, in the order of their numbers like DDNet's
+   * loop (killing a team can add rows). */
+  int numbers[DDNET_NUM_TEAMS];
+  int count = 0;
+  for (int row = 0; row < w->num_team_rows; row++) {
+    if (w->teams[row].kill_tick == -1)
       continue;
-    any = true;
-    if (teams->team_state[i] != DDNET_TEAMSTATE_STARTED_UNFINISHABLE)
+    int at = count++;
+    while (at > 0 && numbers[at - 1] > w->teams[row].number) {
+      numbers[at] = numbers[at - 1];
+      at--;
+    }
+    numbers[at] = w->teams[row].number;
+  }
+  for (int n = 0; n < count; n++) {
+    const ddnet_team_t *team = &w->teams[team_row_find(w, numbers[n])];
+    if (team->state != DDNET_TEAMSTATE_STARTED_UNFINISHABLE)
       continue;
-    if (now >= teams->team_unfinishable_kill_tick[i]) {
+    if (now >= team->kill_tick) {
       /* The team is killed because it cannot finish anymore. */
-      teams_kill_team(w, i, -1, -1);
+      teams_kill_team(w, numbers[n], -1, -1);
     }
   }
-  w->unfinishable_teams = any;
+  w->unfinishable_teams = count > 0;
 }

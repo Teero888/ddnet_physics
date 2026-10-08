@@ -9,8 +9,12 @@
 #include <stdlib.h>
 
 /* A switched entity only acts on teams whose switch is active. */
-static bool switch_inactive_for(world_t *w, const entity_t *ent, int team) {
-  return ent->layer == LAYER_SWITCH && ent->number > 0 && !switch_status(w, ent->number, team);
+static bool switch_inactive_for(world_t *w, const entity_t *ent, int row) {
+  return ent->layer == LAYER_SWITCH && ent->number > 0 && !switch_status(w, ent->number, row);
+}
+/* the same for the team of a tee (whose row is only looked up for a switched entity) */
+static inline bool switch_inactive_for_tee(world_t *w, const entity_t *ent, const character_t *chr) {
+  return ent->layer == LAYER_SWITCH && ent->number > 0 && !switch_status(w, ent->number, character_team_row(w, chr));
 }
 
 /* Entities on conveyor tiles move every 0.15 seconds. */
@@ -109,6 +113,12 @@ static ddnet_sight_memo_t *sight_memo(world_t *w) {
 
 DDNET_HOT void projectile_create(world_t *w, int type, int owner, vec2 pos, vec2 dir, int span, bool freeze,
                                  bool explosive, int layer, int number, int bouncing) {
+  /* the first projectile the world ever has: the lists by due tick, all empty (see projectile_due) */
+  if (!w->projectile_due) {
+    if (!(w->projectile_due = malloc(DDNET_PROJECTILE_DUE_SIZE * sizeof(*w->projectile_due))))
+      return;
+    memset(w->projectile_due, 0xff, DDNET_PROJECTILE_DUE_SIZE * sizeof(*w->projectile_due));
+  }
   int index = world_new_entity(w, DDNET_ENTITY_PROJECTILE, pos);
   if (index < 0)
     return;
@@ -259,7 +269,7 @@ static void projectile_tick(world_t *w, int index) {
       for (int i = 0; i < num; ++i) {
         character_t *chr = &w->characters[ents[i]];
         if (ent->layer != LAYER_SWITCH || (ent->layer == LAYER_SWITCH && ent->number > 0 &&
-                                           switch_status(w, ent->number, character_team(w, chr))))
+                                           switch_status(w, ent->number, character_team_row(w, chr))))
           character_freeze(w, chr);
       }
     } else if (target_chr) {
@@ -1660,7 +1670,7 @@ static void pickup_tick(world_t *w, int index) {
     character_t *chr = &w->characters[ents[i]];
 
     if (chr->alive) {
-      if (switch_inactive_for(w, ent, character_team(w, chr)))
+      if (switch_inactive_for_tee(w, ent, chr))
         continue;
       pickup_apply(w, pickup->type, pickup->subtype, ent->pos, chr);
     }
@@ -1678,7 +1688,7 @@ static void pickup_mover_apply(world_t *w, int index, character_t *chr) {
   const float radius = PICKUP_PROXIMITY_RADIUS + PICKUP_COLLISION_EXTRA_SIZE;
   if (!(vdistance(chr->pos, ent->pos) < radius + PHYSICAL_SIZE))
     return;
-  if (!chr->alive || switch_inactive_for(w, ent, character_team(w, chr)))
+  if (!chr->alive || switch_inactive_for_tee(w, ent, chr))
     return;
   pickup_apply(w, ent->u.pickup.type, ent->u.pickup.subtype, ent->pos, chr);
 }
@@ -1688,9 +1698,9 @@ DDNET_NOINLINE static void pickups_tick_near(world_t *w, character_t *chr) {
   const collision_t *col = collision(w);
   const float radius = PICKUP_PROXIMITY_RADIUS + PICKUP_COLLISION_EXTRA_SIZE;
   int mover = 0;
-#define MOVERS_BEFORE(id)                                                                                    \
-  while (mover < w->num_pickup_movers && w->pickup_mover_ids[mover] > (id))                                  \
-  pickup_mover_apply(w, w->pickup_movers[mover++], chr)
+#define MOVERS_BEFORE(pickup_id)                                                                                    \
+  while (mover < w->num_pickup_movers && w->pickup_movers[mover].id > (pickup_id))                                  \
+  pickup_mover_apply(w, w->pickup_movers[mover++].index, chr)
   const int tx = clampi((int)chr->pos.x >> 5, 0, col->width - 1);
   const int ty = clampi((int)chr->pos.y >> 5, 0, col->height - 1);
   /* pickups tick newest first, and they were created row by row */
@@ -1712,7 +1722,7 @@ DDNET_NOINLINE static void pickups_tick_near(world_t *w, character_t *chr) {
         if (!(vdistance(chr->pos, pickup->pos) < radius + PHYSICAL_SIZE))
           continue;
         if (pickup->layer == LAYER_SWITCH && pickup->number > 0 &&
-            !switch_status(w, pickup->number, character_team(w, chr)))
+            !switch_status(w, pickup->number, character_team_row(w, chr)))
           continue;
         pickup_apply(w, pickup->type, pickup->subtype, pickup->pos, chr);
       }
@@ -1734,7 +1744,7 @@ DDNET_NOINLINE void pickups_tick_static(world_t *w) {
   /* CPickup::Move */
   if (w->num_pickup_movers && is_mover_tick(w)) {
     for (int m = 0; m < w->num_pickup_movers; m++) {
-      entity_t *ent = entity(w, w->pickup_movers[m]);
+      entity_t *ent = entity(w, w->pickup_movers[m].index);
       collision_mover_speed(col, ent->pos.x, ent->pos.y, &ent->u.pickup.core);
       ent->pos = vadd(ent->pos, ent->u.pickup.core);
     }
@@ -1744,9 +1754,9 @@ DDNET_NOINLINE void pickups_tick_static(world_t *w) {
     character_t *chr = &w->characters[w->core_ids[n]];
     /* the next of the pickups on conveyors, which come before the pickups of the map they were made after */
     int mover = 0;
-#define MOVERS_BEFORE(id)                                                                                    \
-  while (mover < w->num_pickup_movers && w->pickup_mover_ids[mover] > (id))                                  \
-  pickup_mover_apply(w, w->pickup_movers[mover++], chr)
+#define MOVERS_BEFORE(pickup_id)                                                                                    \
+  while (mover < w->num_pickup_movers && w->pickup_movers[mover].id > (pickup_id))                                  \
+  pickup_mover_apply(w, w->pickup_movers[mover++].index, chr)
 
     /* no pickup of the map in reach */
     if (character_is_quiet(col, chr)) {
@@ -1767,12 +1777,6 @@ DDNET_NOINLINE void pickups_tick_static(world_t *w) {
 
 /* CDragger::CDragger */
 bool dragger_create(world_t *w, vec2 pos, float strength, bool ignore_walls, int layer, int number) {
-  ddnet_dragger_targets_t *targets =
-      realloc(w->dragger_targets, (size_t)(w->num_draggers + 1) * sizeof(*w->dragger_targets));
-  if (!targets)
-    return false;
-  w->dragger_targets = targets;
-
   int index = world_new_entity(w, DDNET_ENTITY_DRAGGER, pos);
   if (index < 0)
     return false;
@@ -1786,15 +1790,35 @@ bool dragger_create(world_t *w, vec2 pos, float strength, bool ignore_walls, int
   dragger->eval_tick = server_tick(w);
   dragger->idle = true;
 
-  dragger->targets = w->num_draggers++;
-
-  for (int i = 0; i < MAX_CLIENTS; i++) {
-
-    w->dragger_targets[dragger->targets].target_id_in_team[i] = -1;
-    w->dragger_targets[dragger->targets].beam[i] = -1;
-  }
+  /* (no targets and no beams: no table of them, see ddnet_world_t::dragger_targets) */
+  dragger->targets = -1;
   world_insert_entity(w, DDNET_ENTTYPE_LASER, index);
   return true;
+}
+
+/* A free table of targets and beams (all -1) for the dragger `index`, which is
+ * about to have some. -1 if there is no memory for one. */
+static int dragger_targets_take(world_t *w, int index) {
+  const int size = dragger_table_size(w);
+  int table = 0;
+  while (table < w->num_dragger_targets && dragger_table(w, table)[0] != -1)
+    table++;
+  if (table == w->num_dragger_targets) {
+    if ((table + 1) * size > w->dragger_targets_room) {
+      int *tables = realloc(w->dragger_targets, (size_t)(table + 1) * (size_t)size * sizeof(*tables));
+      if (!tables)
+        return -1;
+      w->dragger_targets = tables;
+      w->dragger_targets_room = (table + 1) * size;
+    }
+    int *tables = w->dragger_targets;
+    w->num_dragger_targets++;
+    for (int i = 1; i < size; i++)
+      tables[table * size + i] = -1;
+  }
+  world_touch(w, TOUCH_DRAGGER_TARGETS, table);
+  dragger_table(w, table)[0] = index;
+  return table;
 }
 
 /* CDraggerBeam::Reset */
@@ -1803,10 +1827,12 @@ static void dragger_beam_reset(world_t *w, entity_t *ent) {
   entity_mark_for_destroy(w, ent);
   beam->active = false;
 
-  /* CDragger::RemoveDraggerBeam */
-  ddnet_dragger_targets_t *targets = &w->dragger_targets[entity(w, beam->dragger)->u.dragger.targets];
-  world_touch(w, TOUCH_DRAGGER_TARGETS, entity(w, beam->dragger)->u.dragger.targets);
-  targets->beam[beam->for_client_id] = -1;
+  /* CDragger::RemoveDraggerBeam (a dragger with a beam has its table) */
+  const int table = entity_peek(w, beam->dragger)->u.dragger.targets;
+  if (table < 0)
+    return;
+  world_touch(w, TOUCH_DRAGGER_TARGETS, table);
+  dragger_table(w, table)[1 + w->table_teams + beam->for_client_id] = -1;
 }
 
 /* CDraggerBeam::Tick */
@@ -1829,7 +1855,7 @@ static void dragger_beam_tick(world_t *w, int index) {
    * When the dragger is disabled for the target player's team, the dragger beam dissolves. The check if a
    * dragger is disabled is only executed every 150ms, so the beam can stay activated up to 6 extra ticks */
   if (is_mover_tick(w)) {
-    if (switch_inactive_for(w, ent, character_team(w, target))) {
+    if (switch_inactive_for_tee(w, ent, target)) {
       dragger_beam_reset(w, ent);
       return;
     }
@@ -1873,8 +1899,6 @@ static void dragger_look_for_players_to_drag(world_t *w, int index) {
   /* (noted for ddnet_world_copy() further down, once something of it may change) */
   entity_t *ent = (entity_t *)entity_peek(w, index);
   ddnet_dragger_t *dragger = &ent->u.dragger;
-  /* this table never moves during a tick */
-  ddnet_dragger_targets_t *targets = &w->dragger_targets[dragger->targets];
 
   /* Create a list of players who are in the range of the dragger */
   int players_in_range[MAX_CLIENTS];
@@ -1889,7 +1913,7 @@ static void dragger_look_for_players_to_drag(world_t *w, int index) {
   int reachable = -1;
   if (num_players_in_range == 1 && dragger->idle) {
     const character_t *target = &w->characters[players_in_range[0]];
-    if (!target->alive || switch_inactive_for(w, ent, character_team(w, target)))
+    if (!target->alive || switch_inactive_for_tee(w, ent, target))
       return;
     const ddnet_sight_t sight = dragger->sight;
     reachable = !collision_sight_blocked(collision(w), dragger->ignore_walls ? 2 : 1, ent->pos, target->pos,
@@ -1902,7 +1926,17 @@ static void dragger_look_for_players_to_drag(world_t *w, int index) {
 
   /* (from here on the dragger and the table of targets and beams may be written to) */
   world_touch(w, TOUCH_ENTITY, index);
+  if (dragger->targets < 0) {
+    const int table = dragger_targets_take(w, index);
+    if (table < 0)
+      return;
+    dragger->targets = table;
+  }
   world_touch(w, TOUCH_DRAGGER_TARGETS, dragger->targets);
+  /* its table: the target of each team row, then the beam on each client (no
+   * other dragger takes a table while this one looks, so it does not move) */
+  int *const target_of_team = dragger_table(w, dragger->targets) + 1;
+  int *const beam_on = target_of_team + w->table_teams;
 
   /* The closest player (within range) in a team is selected as the target */
   int closest_target_id_in_team[MAX_CLIENTS];
@@ -1916,23 +1950,27 @@ static void dragger_look_for_players_to_drag(world_t *w, int index) {
   if (sparse) {
     for (int i = 0; i < num_players_in_range; i++) {
       const character_t *target = &w->characters[players_in_range[i]];
-      min_dist_in_team[character_team(w, target)] = 0;
-      closest_target_id_in_team[character_team(w, target)] = -1;
+      min_dist_in_team[character_team_row(w, target)] = 0;
+      closest_target_id_in_team[character_team_row(w, target)] = -1;
       can_still_be_team_target[character_id(target)] = false;
       is_target[character_id(target)] = false;
     }
   } else {
-    for (int i = 0; i < MAX_CLIENTS; i++) {
+    /* (DDNet goes through all its slots: the clients and teams that are not
+     * there never have a target or beam, -1 like what this would set) */
+    for (int i = 0; i < w->num_clients; i++) {
       can_still_be_team_target[i] = false;
-      min_dist_in_team[i] = 0;
       is_target[i] = false;
+    }
+    for (int i = 0; i < w->num_team_rows; i++) {
+      min_dist_in_team[i] = 0;
       closest_target_id_in_team[i] = -1;
     }
   }
 
   for (int i = 0; i < num_players_in_range; i++) {
     character_t *target = &w->characters[players_in_range[i]];
-    const int target_team = character_team(w, target);
+    const int target_team = character_team_row(w, target);
     /* If the dragger is disabled for the target's team, no dragger beam will be generated */
     if (switch_inactive_for(w, ent, target_team))
       continue;
@@ -1959,36 +1997,36 @@ static void dragger_look_for_players_to_drag(world_t *w, int index) {
   }
 
   /* Set the closest player for each team as a target if the team does not have a target player yet */
-  for (int n = 0; n < (sparse ? num_players_in_range : MAX_CLIENTS); n++) {
-    const int i = sparse ? character_team(w, &w->characters[players_in_range[n]]) : n;
-    if ((targets->target_id_in_team[i] != -1 && !can_still_be_team_target[targets->target_id_in_team[i]]) ||
-        targets->target_id_in_team[i] == -1) {
-      targets->target_id_in_team[i] = closest_target_id_in_team[i];
+  for (int n = 0; n < (sparse ? num_players_in_range : w->num_team_rows); n++) {
+    const int i = sparse ? character_team_row(w, &w->characters[players_in_range[n]]) : n;
+    if ((target_of_team[i] != -1 && !can_still_be_team_target[target_of_team[i]]) ||
+        target_of_team[i] == -1) {
+      target_of_team[i] = closest_target_id_in_team[i];
     }
-    if (targets->target_id_in_team[i] != -1)
-      is_target[targets->target_id_in_team[i]] = true;
+    if (target_of_team[i] != -1)
+      is_target[target_of_team[i]] = true;
   }
 
   /* in the order of the client ids, which is the order the beams are created in */
   if (sparse)
     sort_ids(players_in_range, num_players_in_range);
-  for (int n = 0; n < (sparse ? num_players_in_range : MAX_CLIENTS); n++) {
+  for (int n = 0; n < (sparse ? num_players_in_range : w->num_clients); n++) {
     const int i = sparse ? players_in_range[n] : n;
     /* Create Dragger Beams which have not been created yet */
-    if (is_target[i] && targets->beam[i] == -1) {
+    if (is_target[i] && beam_on[i] == -1) {
       ent = entity(w, index);
       dragger = &ent->u.dragger;
-      targets->beam[i] = dragger_beam_create(w, index, ent->pos, dragger->strength, dragger->ignore_walls, i,
+      beam_on[i] = dragger_beam_create(w, index, ent->pos, dragger->strength, dragger->ignore_walls, i,
                                              ent->layer, ent->number);
       /* The generated dragger beam is placed in the first position in the tick sequence and would therefore
        * no longer be executed automatically in this tick. To execute the dragger beam nevertheless already
        * this tick we call it manually (we do this to keep the old game logic) */
-      if (targets->beam[i] != -1)
-        dragger_beam_tick(w, targets->beam[i]);
+      if (beam_on[i] != -1)
+        dragger_beam_tick(w, beam_on[i]);
     }
     /* Remove dragger beams that have not yet been deleted */
-    else if (!is_target[i] && targets->beam[i] != -1) {
-      dragger_beam_reset(w, entity(w, targets->beam[i]));
+    else if (!is_target[i] && beam_on[i] != -1) {
+      dragger_beam_reset(w, entity(w, beam_on[i]));
     }
   }
 
@@ -1997,16 +2035,20 @@ static void dragger_look_for_players_to_drag(world_t *w, int index) {
     for (int n = 0; n < num_players_in_range; n++) {
       const int id = players_in_range[n];
       idle &=
-          targets->target_id_in_team[character_team(w, &w->characters[id])] == -1 && targets->beam[id] == -1;
+          target_of_team[character_team_row(w, &w->characters[id])] == -1 && beam_on[id] == -1;
     }
   } else {
-    for (int i = 0; i < MAX_CLIENTS; i++)
-      idle &= targets->target_id_in_team[i] == -1 && targets->beam[i] == -1;
+    for (int i = 0; i < w->num_team_rows; i++)
+      idle &= target_of_team[i] == -1;
+    for (int i = 0; i < w->num_clients; i++)
+      idle &= beam_on[i] == -1;
   }
   /* was busy before, or it would not have got here with nobody in range */
   ddnet_dragger_t *self = &entity(w, index)->u.dragger;
   if (self->idle && !idle) {
-    if (w->busy_draggers < DDNET_MAX_BUSY_DRAGGERS && !w->busy_draggers_overflow)
+    if (w->busy_draggers < DDNET_MAX_BUSY_DRAGGERS && !w->busy_draggers_overflow &&
+        (w->busy_dragger_ids ||
+         (w->busy_dragger_ids = malloc(DDNET_MAX_BUSY_DRAGGERS * sizeof(*w->busy_dragger_ids)))))
       w->busy_dragger_ids[w->busy_draggers] = index;
     else
       w->busy_draggers_overflow = true;
@@ -2025,6 +2067,13 @@ static void dragger_look_for_players_to_drag(world_t *w, int index) {
       w->busy_draggers_overflow = false;
   }
   self->idle = idle;
+  /* nothing left in its table (all -1 again): it gives it back */
+  if (idle) {
+    dragger_table(w, self->targets)[0] = -1;
+    self->targets = -1;
+    /* (it may have been aiming for a team that nobody is in anymore) */
+    teams_release_rows(w);
+  }
 }
 
 /* CDragger::Tick */
@@ -2049,10 +2098,10 @@ static void dragger_tick(world_t *w, int index) {
 
     /* Adopt the new position for all outgoing laser beams */
     if (!dragger->idle) {
-      const ddnet_dragger_targets_t *targets = &w->dragger_targets[dragger->targets];
-      for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (targets->beam[i] != -1)
-          entity(w, targets->beam[i])->pos = ent->pos;
+      const int *beam_on = dragger_table(w, dragger->targets) + 1 + w->table_teams;
+      for (int i = 0; i < w->num_clients; i++) {
+        if (beam_on[i] != -1)
+          entity(w, beam_on[i])->pos = ent->pos;
       }
     }
 
@@ -2064,10 +2113,14 @@ static void dragger_tick(world_t *w, int index) {
 
 /* CGun::CGun */
 bool gun_create(world_t *w, vec2 pos, bool freeze, bool explosive, int layer, int number) {
-  ddnet_gun_timers_t *timers = realloc(w->gun_timers, (size_t)(w->num_guns + 1) * sizeof(*w->gun_timers));
+  /* its row of timers, all 0 (see world_t::gun_timers) */
+  const int stride = w->table_teams + w->table_clients;
+  const size_t bytes = (size_t)(w->num_guns + 1) * (size_t)stride * sizeof(*w->gun_timers);
+  int *timers = realloc(w->gun_timers, bytes ? bytes : sizeof(*w->gun_timers));
   if (!timers)
     return false;
   w->gun_timers = timers;
+  memset(&timers[w->num_guns * stride], 0, (size_t)stride * sizeof(*timers));
 
   int index = world_new_entity(w, DDNET_ENTITY_GUN, pos);
   if (index < 0)
@@ -2082,12 +2135,6 @@ bool gun_create(world_t *w, vec2 pos, bool freeze, bool explosive, int layer, in
   gun->eval_tick = server_tick(w);
 
   gun->timers = w->num_guns++;
-
-  for (int i = 0; i < MAX_CLIENTS; i++) {
-
-    w->gun_timers[gun->timers].last_fire_team[i] = 0;
-    w->gun_timers[gun->timers].last_fire_solo[i] = 0;
-  }
   world_insert_entity(w, DDNET_ENTTYPE_LASER, index);
   return true;
 }
@@ -2115,8 +2162,10 @@ static void gun_fire(world_t *w, int index) {
   /* (noted for ddnet_world_copy() where something of it changes) */
   entity_t *ent = (entity_t *)entity_peek(w, index);
   ddnet_gun_t *gun = &ent->u.gun;
-  /* this table never moves during a tick */
-  ddnet_gun_timers_t *timers = &w->gun_timers[gun->timers];
+  /* its row, which never moves during a tick: by team, then by client id (the
+   * teams and players in range are always in it, see world_t::gun_timers) */
+  int *last_fire_team = &w->gun_timers[gun->timers * (w->table_teams + w->table_clients)];
+  int *last_fire_solo = last_fire_team + w->table_teams;
 
   /* Create a list of players who are in the range of the turret */
   int players_in_range[MAX_CLIENTS];
@@ -2135,14 +2184,14 @@ static void gun_fire(world_t *w, int index) {
    * are used here. */
   for (int i = 0; i < num_players_in_range; i++) {
     const character_t *target = &w->characters[players_in_range[i]];
-    min_dist_in_team[character_team(w, target)] = 0;
-    target_id_in_team[character_team(w, target)] = -1;
+    min_dist_in_team[character_team_row(w, target)] = 0;
+    target_id_in_team[character_team_row(w, target)] = -1;
     is_target[character_id(target)] = false;
   }
 
   for (int i = 0; i < num_players_in_range; i++) {
     character_t *target = &w->characters[players_in_range[i]];
-    const int target_team = character_team(w, target);
+    const int target_team = character_team_row(w, target);
     /* If the turret is disabled for the target's team, the turret will not fire */
     if (switch_inactive_for(w, ent, target_team))
       continue;
@@ -2151,10 +2200,10 @@ static void gun_fire(world_t *w, int index) {
     const int target_client_id = character_id(target);
     const bool target_is_solo = teams_get_solo(w, target_client_id);
     if ((target_is_solo &&
-         timers->last_fire_solo[target_client_id] + SERVER_TICK_SPEED / w->config.sv_plasma_per_sec >
+         last_fire_solo[target_client_id] + SERVER_TICK_SPEED / w->config.sv_plasma_per_sec >
              server_tick(w)) ||
         (!target_is_solo &&
-         timers->last_fire_team[target_team] + SERVER_TICK_SPEED / w->config.sv_plasma_per_sec >
+         last_fire_team[target_team] + SERVER_TICK_SPEED / w->config.sv_plasma_per_sec >
              server_tick(w))) {
       continue;
     }
@@ -2170,7 +2219,7 @@ static void gun_fire(world_t *w, int index) {
       if (target_is_solo) {
         is_target[target_client_id] = true;
         world_touch(w, TOUCH_GUN_TIMERS, gun->timers);
-        timers->last_fire_solo[target_client_id] = server_tick(w);
+        last_fire_solo[target_client_id] = server_tick(w);
       } else {
         int distance = (int)vdistance(target->pos, ent->pos);
         if (min_dist_in_team[target_team] == 0 || min_dist_in_team[target_team] > distance) {
@@ -2183,11 +2232,11 @@ static void gun_fire(world_t *w, int index) {
 
   /* Set the closest player for each team as a target */
   for (int n = 0; n < num_players_in_range; n++) {
-    const int i = character_team(w, &w->characters[players_in_range[n]]);
+    const int i = character_team_row(w, &w->characters[players_in_range[n]]);
     if (target_id_in_team[i] != -1) {
       is_target[target_id_in_team[i]] = true;
       world_touch(w, TOUCH_GUN_TIMERS, gun->timers);
-      timers->last_fire_team[i] = server_tick(w);
+      last_fire_team[i] = server_tick(w);
     }
   }
 
@@ -2364,7 +2413,7 @@ static void light_hit_character(world_t *w, entity_t *ent) {
     if (closest_point_on_line(ent->pos, light->to, chr->pos, &intersect_pos)) {
       float len = vdistance(chr->pos, intersect_pos);
       if (len < PHYSICAL_SIZE + 0.0f) {
-        if (switch_inactive_for(w, ent, character_team(w, chr)))
+        if (switch_inactive_for_tee(w, ent, chr))
           continue;
         character_freeze(w, chr);
       }

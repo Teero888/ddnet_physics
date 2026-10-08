@@ -116,10 +116,7 @@ void core_reset(world_t *w, core_t *core) {
   core->is_in_freeze = false;
   core->deep_frozen = false;
   core->live_frozen = false;
-
-  /* never initialize both to 0 */
-  core->input.target_x = 0;
-  core->input.target_y = -1;
+  /* (the input, whose aim DDNet sets to 0, -1 here, is the one of the character: character_spawn() sets it) */
 }
 
 typedef struct switch_active_ctx_t {
@@ -134,7 +131,7 @@ static bool core_is_switch_active_cb(unsigned char number, void *user) {
   core_t *core = ctx->core;
   if (w->num_switchers != 0)
     if (core->id != -1)
-      return switch_status(w, number, teams_team(w, core->id));
+      return switch_status(w, number, teams_team_row(w, core->id));
   return false;
 }
 
@@ -411,7 +408,7 @@ static const uint8_t jump_table[48] = {0, 11, 0, 1, 2, 2, 2, 3, 0, 5, 0, 1, 0, 0
                                        0, 11, 0, 1, 2, 2, 2, 3, 0, 5, 0, 1, 0, 5, 0, 1};
 
 /* core_tick() with the tuning of the tee, for the callers that have it */
-static inline __attribute__((always_inline)) void core_tick_tuned(world_t *w, core_t *core, bool use_input,
+static inline __attribute__((always_inline)) void core_tick_tuned(world_t *w, core_t *core, int held,
                                                                   bool do_deferred_tick, int flags,
                                                                   const tuning_t *tuning, bool on_map) {
   const collision_t *col = collision(w);
@@ -424,7 +421,7 @@ static inline __attribute__((always_inline)) void core_tick_tuned(world_t *w, co
   } else {
     switch_active_ctx_t ctx = {w, core};
     core->move_restrictions = collision_get_move_restrictions(
-        col, use_input ? core_is_switch_active_cb : NULL, &ctx, core->pos, 18.0f, -1);
+        col, core_is_switch_active_cb, &ctx, core->pos, 18.0f, -1);
   }
   /* get ground state (on_map: the position is known to be on the map) */
   if (flags & DDNET_TILEFLAG_NEAR_SOLID)
@@ -439,68 +436,58 @@ static inline __attribute__((always_inline)) void core_tick_tuned(world_t *w, co
   float accel = grounded ? ddnet_tune(tuning->ground_control_accel) : ddnet_tune(tuning->air_control_accel);
   float friction = grounded ? ddnet_tune(tuning->ground_friction) : ddnet_tune(tuning->air_friction);
 
-  /* handle input */
-  if (use_input) {
-    core->direction = core->input.direction;
+  /* handle input (the tee always has it here; held: what a frozen tee leaves out of it) */
+  core->direction = core->input.direction & -!(held & HELD_MOVE);
 
-    /* the angle only depends on the input, it is computed when somebody asks for it */
-    core->has_ticked = true;
+  /* the angle only depends on the aim, it is computed when somebody asks for it */
+  core->aim_x = core->input.target_x;
+  core->aim_y = core->input.target_y;
 
-    /* Special jump cases:
-     * jumps == -1: A tee may only make one ground jump. Second jumped bit is always set
-     * jumps == 0: A tee may not make a jump. Second jumped bit is always set
-     * jumps == 1: A tee may do either a ground jump or an air jump. Second jumped bit is set after the first
-     * jump The second jumped bit can be overridden by special tiles so that the tee can nevertheless jump. */
+  /* Special jump cases:
+   * jumps == -1: A tee may only make one ground jump. Second jumped bit is always set
+   * jumps == 0: A tee may not make a jump. Second jumped bit is always set
+   * jumps == 1: A tee may do either a ground jump or an air jump. Second jumped bit is set after the first
+   * jump The second jumped bit can be overridden by special tiles so that the tee can nevertheless jump. */
 
-    /* handle jump, and the rule for standing on the ground further down (see
-     * below). The input is what decides, which a branch predictor cannot
-     * know. Everything the nested ifs of DDNet do here follows from whether
-     * the key is down, the two bits of jumped, whether the tee stands on the
-     * ground and whether it has no jumps, one (or -1) or more: a table of the
-     * 48 cases (jump_table), with the new two bits of jumped, and whether the
-     * jump is from the ground (4) or in the air (8). */
-    {
-      const int jumped = core->jumped;
-      const int pressed = core->input.jump != 0;
-      const int jumps = (core->jumps != 0) + (core->jumps > 1);
-      const int e = jump_table[pressed | (jumped & 3) << 1 | (int)grounded << 3 | jumps << 4];
-      const int ground = (e >> 2) & 1, air = e >> 3;
+  /* handle jump, and the rule for standing on the ground that comes after it
+   * in DDNet. The input is what decides, which a branch predictor cannot
+   * know. Everything the nested ifs of DDNet do here follows from whether the
+   * key is down, the two bits of jumped, whether the tee stands on the ground
+   * and whether it has no jumps, one (or -1) or more: a table of the 48 cases
+   * (jump_table), with the new two bits of jumped, and whether the jump is
+   * from the ground (4) or in the air (8). */
+  {
+    const int jumped = core->jumped;
+    const int pressed = (core->input.jump != 0) & !(held & HELD_MOVE);
+    const int jumps = (core->jumps != 0) + (core->jumps > 1);
+    const int e = jump_table[pressed | (jumped & 3) << 1 | (int)grounded << 3 | jumps << 4];
+    const int ground = (e >> 2) & 1, air = e >> 3;
 
-      core->triggered_events |= (-ground & COREEVENT_GROUND_JUMP) | (-air & COREEVENT_AIR_JUMP);
-      const float vel_y[3] = {core->vel.y, -ddnet_tune(tuning->air_jump_impulse),
-                              -ddnet_tune(tuning->ground_jump_impulse)};
-      core->vel.y = vel_y[air + 2 * ground];
-      /* (the bits above the two are left as they are) */
-      core->jumped = (jumped & ~3) | (e & 3);
-      /* on the ground it is 0 after the rule below, otherwise only an air jump counts */
-      core->jumped_total = (core->jumped_total + air) & -!grounded;
-    }
-
-    /* handle hook (left with its branches: without them it was not faster) */
-    if (core->input.hook) {
-      if (core->hook_state == HOOK_IDLE) {
-        core->hook_state = HOOK_FLYING;
-        const vec2 target_direction = vnormalize(v2(core->input.target_x, core->input.target_y));
-        core->hook_pos = vadd(core->pos, vscale(vscale(target_direction, PHYSICAL_SIZE), 1.5f));
-        core->hook_dir = target_direction;
-        core_set_hooked_player(w, core, -1);
-        core->hook_tick = (int)((float)SERVER_TICK_SPEED * (1.25f - ddnet_tune(tuning->hook_duration)));
-        core->triggered_events |= COREEVENT_HOOK_LAUNCH;
-      }
-    } else {
-      core_set_hooked_player(w, core, -1);
-      core->hook_state = HOOK_IDLE;
-      core->hook_pos = core->pos;
-    }
+    core->triggered_events |= (-ground & COREEVENT_GROUND_JUMP) | (-air & COREEVENT_AIR_JUMP);
+    const float vel_y[3] = {core->vel.y, -ddnet_tune(tuning->air_jump_impulse),
+                            -ddnet_tune(tuning->ground_jump_impulse)};
+    core->vel.y = vel_y[air + 2 * ground];
+    /* (the bits above the two are left as they are) */
+    core->jumped = (jumped & ~3) | (e & 3);
+    /* on the ground it is 0 after the rule below, otherwise only an air jump counts */
+    core->jumped_total = (core->jumped_total + air) & -!grounded;
   }
 
-  /* handle jumping
-   * 1 bit = to keep track if a jump has been made on this input (player is holding space bar)
-   * 2 bit = to track if all air-jumps have been used up (tee gets dark feet) */
-  if (!use_input && grounded) {
-    /* (with input, the jump table did this already) */
-    core->jumped &= ~2;
-    core->jumped_total = 0;
+  /* handle hook (left with its branches: without them it was not faster) */
+  if (core->input.hook && !(held & HELD_HOOK)) {
+    if (core->hook_state == HOOK_IDLE) {
+      core->hook_state = HOOK_FLYING;
+      const vec2 target_direction = vnormalize(v2(core->input.target_x, core->input.target_y));
+      core->hook_pos = vadd(core->pos, vscale(vscale(target_direction, PHYSICAL_SIZE), 1.5f));
+      core->hook_dir = target_direction;
+      core_set_hooked_player(w, core, -1);
+      core->hook_tick = (int)((float)SERVER_TICK_SPEED * (1.25f - ddnet_tune(tuning->hook_duration)));
+      core->triggered_events |= COREEVENT_HOOK_LAUNCH;
+    }
+  } else {
+    core_set_hooked_player(w, core, -1);
+    core->hook_state = HOOK_IDLE;
+    core->hook_pos = core->pos;
   }
 
   /* add the speed modification according to players wanted direction */
@@ -581,8 +568,8 @@ static inline __attribute__((always_inline)) void core_tick_tuned(world_t *w, co
     core_tick_deferred_tuned(w, core, tuning);
 }
 
-DDNET_HOT void core_tick(world_t *w, core_t *core, bool use_input, bool do_deferred_tick, int flags) {
-  core_tick_tuned(w, core, use_input, do_deferred_tick, flags, core_tuning(w, core), false);
+DDNET_HOT void core_tick(world_t *w, core_t *core, int held, bool do_deferred_tick, int flags) {
+  core_tick_tuned(w, core, held, do_deferred_tick, flags, core_tuning(w, core), false);
 }
 
 /* CCharacterCore::TickDeferred: the forces between tees. */

@@ -49,7 +49,14 @@ void ddnet_world_sync(ddnet_world_t *world);
  * reference backend. */
 void ddnet_world_changed(ddnet_world_t *world);
 
-/* Tell the world that world->tuning was changed after ddnet_world_init().
+/* To change the tuning after ddnet_world_init(): write to the tune zones
+ * this returns (world->tuning, [0] is the global tuning), then call
+ * ddnet_world_tuning_changed(). Copies of a world may share its tuning (the
+ * optimized backend does): this gives the world tuning of its own first, so
+ * write to world->tuning through it only. NULL if there is no memory. */
+ddnet_tuning_t *ddnet_world_tuning_edit(ddnet_world_t *world);
+
+/* Tell the world that its tuning was changed (see ddnet_world_tuning_edit()).
  * Tuning is read through this call only, so that implementations can keep it in
  * the form they need. */
 void ddnet_world_tuning_changed(ddnet_world_t *world);
@@ -106,6 +113,7 @@ void ddnet_ev_world_free(ddnet_world_t *world);
 bool ddnet_ev_world_copy(ddnet_world_t *dst, const ddnet_world_t *src);
 void ddnet_ev_world_sync(ddnet_world_t *world);
 void ddnet_ev_world_changed(ddnet_world_t *world);
+ddnet_tuning_t *ddnet_ev_world_tuning_edit(ddnet_world_t *world);
 void ddnet_ev_world_tuning_changed(ddnet_world_t *world);
 void ddnet_ev_world_tick(ddnet_world_t *world);
 bool ddnet_ev_player_join(ddnet_world_t *world, int client_id);

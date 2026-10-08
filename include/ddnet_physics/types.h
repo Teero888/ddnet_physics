@@ -7,12 +7,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Number of player slots. This is DDNet's MAX_CLIENTS and changes the layout
- * of the structs below: the library and everything that uses it must agree on
- * it. The CMake target exports the value it was built with. */
-#ifndef DDNET_MAX_CLIENTS
+/* DDNet's MAX_CLIENTS: client ids and ddrace team numbers are below it. A
+ * rule of the game, not a size: the optimized backend sizes nothing of a
+ * world by it (the reference backend, a plain port, keeps DDNet's arrays). */
 #define DDNET_MAX_CLIENTS 128
-#endif
 
 enum {
   DDNET_TEAM_FLOCK = 0, /* team 0: everybody who is not in a team, every tee races for itself */

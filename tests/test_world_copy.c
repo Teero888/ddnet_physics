@@ -35,7 +35,12 @@ static void random_input(ddnet_input_t *input) {
 /* Compare everything that is plain data: both worlds must be in the same state. */
 static int worlds_equal(const ddnet_world_t *a, const ddnet_world_t *b) {
   if (a->tick != b->tick || a->num_entities != b->num_entities || a->num_clients != b->num_clients ||
+#ifdef DDNET_PHYSICS_BACKEND_OPTIMIZED
+      a->num_team_rows != b->num_team_rows ||
+      (a->num_team_rows && memcmp(a->teams, b->teams, (size_t)a->num_team_rows * sizeof(*a->teams)) != 0) ||
+#else
       memcmp(&a->teams, &b->teams, sizeof(a->teams)) != 0 ||
+#endif
 
       memcmp(a->first_entity, b->first_entity, sizeof(a->first_entity)) != 0)
     return 0;

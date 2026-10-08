@@ -47,7 +47,7 @@ if(DDNET_PHYSICS_BACKEND STREQUAL "optimized")
     ${PROJECT_SOURCE_DIR}/src/common/tuning.c)
   target_include_directories(copy_stress PRIVATE ${PROJECT_SOURCE_DIR}/include)
   target_compile_definitions(copy_stress PRIVATE
-    DDNET_PHYSICS_CHECK_COPY DDNET_PHYSICS_BACKEND_OPTIMIZED DDNET_MAX_CLIENTS=${DDNET_MAX_CLIENTS})
+    DDNET_PHYSICS_CHECK_COPY DDNET_PHYSICS_BACKEND_OPTIMIZED)
   target_link_libraries(copy_stress PRIVATE ddnet_map_loader ddnet_physics_options m)
   set_target_properties(copy_stress PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
   if(EXISTS "${DDNET_PHYSICS_TEST_MAP}")

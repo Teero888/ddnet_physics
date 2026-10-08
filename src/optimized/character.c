@@ -19,7 +19,7 @@ bool character_can_collide(const world_t *w, const character_t *chr, int client_
 
 void character_set_solo(world_t *w, character_t *chr, bool solo) {
   chr->core.solo = solo;
-  w->teams.is_solo[character_id(chr)] = solo;
+  w->players[character_id(chr)].is_solo = solo;
 }
 
 /* CCharacter::SetWeapon */
@@ -172,12 +172,10 @@ DDNET_HOT static void character_handle_jetpack(world_t *w, character_t *chr) {
   if (chr->core.jetpack && chr->core.active_weapon == WEAPON_GUN)
     full_auto = true;
 
-  /* check if we gonna fire */
+  /* check if we gonna fire (DDNet also counts the presses since m_LatestPrevInput, which on the tick is the
+   * input itself: none) */
   bool will_fire = false;
-  if (count_input(chr->latest_prev_input.fire, chr->latest_input.fire).presses)
-    will_fire = true;
-
-  if (full_auto && (chr->latest_input.fire & 1) && chr->core.weapons[chr->core.active_weapon].ammo)
+  if (full_auto && (chr->core.input.fire & 1) && chr->core.weapons[chr->core.active_weapon].ammo)
     will_fire = true;
 
   if (!will_fire)
@@ -190,7 +188,7 @@ DDNET_HOT static void character_handle_jetpack(world_t *w, character_t *chr) {
   switch (chr->core.active_weapon) {
   case WEAPON_GUN: {
     if (chr->core.jetpack) {
-      vec2 direction = vnormalize(v2(chr->latest_input.target_x, chr->latest_input.target_y));
+      vec2 direction = vnormalize(v2(chr->core.input.target_x, chr->core.input.target_y));
       float strength = ddnet_tune(get_tuning(w, chr->tune_zone)->jetpack_strength);
       character_take_damage(w, chr, vscale(vscale(direction, -1.0f), (strength / 100.0f / 6.11f)), 0,
                             character_id(chr), chr->core.active_weapon);
@@ -307,8 +305,8 @@ DDNET_HOT static void character_do_weapon_switch(world_t *w, character_t *chr) {
 #endif
 }
 
-/* CCharacter::HandleWeaponSwitch */
-DDNET_HOT static void character_handle_weapon_switch(world_t *w, character_t *chr) {
+/* CCharacter::HandleWeaponSwitch, for the input in core.input after prev */
+DDNET_HOT static void character_handle_weapon_switch(world_t *w, character_t *chr, const input_t *prev_input) {
   int wanted_weapon = chr->core.active_weapon;
   if (chr->queued_weapon != -1)
     wanted_weapon = chr->queued_weapon;
@@ -325,11 +323,11 @@ DDNET_HOT static void character_handle_weapon_switch(world_t *w, character_t *ch
   /* select Weapon (counters that did not change count no presses) */
   /* (next_weapon and prev_weapon are next to each other: both at once) */
   uint64_t counters, prev_counters;
-  memcpy(&counters, &chr->latest_input.next_weapon, sizeof(counters));
-  memcpy(&prev_counters, &chr->latest_prev_input.next_weapon, sizeof(prev_counters));
+  memcpy(&counters, &chr->core.input.next_weapon, sizeof(counters));
+  memcpy(&prev_counters, &prev_input->next_weapon, sizeof(prev_counters));
   if (counters != prev_counters) {
-    int next = count_input(chr->latest_prev_input.next_weapon, chr->latest_input.next_weapon).presses;
-    int prev = count_input(chr->latest_prev_input.prev_weapon, chr->latest_input.prev_weapon).presses;
+    int next = count_input(prev_input->next_weapon, chr->core.input.next_weapon).presses;
+    int prev = count_input(prev_input->prev_weapon, chr->core.input.prev_weapon).presses;
 
     if (next < 128) { /* make sure we only try sane stuff */
       while (next) {  /* Next Weapon selection */
@@ -349,10 +347,9 @@ DDNET_HOT static void character_handle_weapon_switch(world_t *w, character_t *ch
   }
 
   /* Direct Weapon selection (the value really is taken from the other input:
-   * m_Input, which has it from m_SavedInput at this time). Without branches,
+   * m_Input, which still has the one before at this time). Without branches,
    * like in character_do_weapon_switch(). */
-  wanted_weapon =
-      select_int(chr->latest_input.wanted_weapon != 0, chr->saved_input.wanted_weapon - 1, wanted_weapon);
+  wanted_weapon = select_int(chr->core.input.wanted_weapon != 0, prev_input->wanted_weapon - 1, wanted_weapon);
 
   /* check for insane values */
   {
@@ -388,7 +385,7 @@ static float get_weapon_fire_delay(const tuning_t *tuning, int weapon) {
 /* CCharacter::FireWeapon */
 /* CCharacter::FireWeapon from the point on where it is known that the weapon fires. */
 DDNET_NOINLINE static void character_fire(world_t *w, character_t *chr) {
-  vec2 mouse_target = v2(chr->latest_input.target_x, chr->latest_input.target_y);
+  vec2 mouse_target = v2(chr->core.input.target_x, chr->core.input.target_y);
   vec2 direction = vnormalize(mouse_target);
   vec2 proj_start_pos = vadd(chr->pos, vscale(vscale(direction, PHYSICAL_SIZE), 0.75f));
 
@@ -502,12 +499,14 @@ DDNET_NOINLINE static void character_fire(world_t *w, character_t *chr) {
   }
 }
 
-/* CCharacter::FireWeapon after its DoWeaponSwitch() */
-DDNET_HOT static void character_fire_weapon_switched(world_t *w, character_t *chr) {
+/* CCharacter::FireWeapon after its DoWeaponSwitch(), with prev_fire the fire of m_LatestPrevInput: of the
+ * input before core.input in CCharacter::OnDirectInput, and of core.input itself on the tick */
+DDNET_HOT static void character_fire_weapon_switched(world_t *w, character_t *chr, int prev_fire) {
+  const int fire = chr->core.input.fire;
   /* The key is up and was not pressed since the last input: nothing below
    * fires (no press to count, and a weapon that fires while the key is held
    * needs it down). */
-  if (!(chr->latest_input.fire & 1) && chr->latest_input.fire == chr->latest_prev_input.fire)
+  if (!(fire & 1) && fire == prev_fire)
     return;
 
   bool full_auto = false;
@@ -527,10 +526,10 @@ DDNET_HOT static void character_fire_weapon_switched(world_t *w, character_t *ch
 
   /* check if we gonna fire */
   bool will_fire = false;
-  if (count_input(chr->latest_prev_input.fire, chr->latest_input.fire).presses)
+  if (count_input(prev_fire, fire).presses)
     will_fire = true;
 
-  if (full_auto && (chr->latest_input.fire & 1) && chr->core.active_weapon >= 0 &&
+  if (full_auto && (fire & 1) && chr->core.active_weapon >= 0 &&
       chr->core.weapons[chr->core.active_weapon].ammo)
     will_fire = true;
 
@@ -542,7 +541,7 @@ DDNET_HOT static void character_fire_weapon_switched(world_t *w, character_t *ch
      * CCharacter::HandleWeapons, after which this comes on the same tick, or before it on the next one: the
      * sound comes again on the tick 50 after it at the earliest, moved on by the ticks the tee misses: see
      * character_pause() and world_remove_entities_from_player()) */
-    if (server_tick(w) >= chr->pain_sound_tick && !(chr->latest_prev_input.fire & 1)) {
+    if (server_tick(w) >= chr->pain_sound_tick && !(prev_fire & 1)) {
       chr->pain_sound_tick = server_tick(w) + 1 * SERVER_TICK_SPEED;
       EMIT_SOUND(w, chr->pos, DDNET_SOUND_PLAYER_PAIN_LONG, character_id(chr));
     }
@@ -564,7 +563,7 @@ DDNET_HOT static void character_fire_weapon(world_t *w, character_t *chr) {
   if (chr->queued_weapon != -1)
     character_do_weapon_switch(w, chr);
 
-  character_fire_weapon_switched(w, chr);
+  character_fire_weapon_switched(w, chr, chr->core.input.fire);
 }
 
 /* CCharacter::HandleWeapons */
@@ -587,38 +586,36 @@ DDNET_HOT static void character_handle_weapons(world_t *w, character_t *chr) {
 
 /* ----------------------------------------------------------------- input */
 
-/* CCharacter::OnPredictedInput */
-DDNET_HOT void character_on_predicted_input(world_t *w, character_t *chr, const input_t *new_input) {
-  (void)w;
-  /* copy new input. DDNet copies it to m_Input too, which nothing looks at
-   * before the tick of the tee sets it from m_SavedInput again. */
-  chr->saved_input = *new_input;
-
-  /* it is not allowed to aim in the center */
-  if (chr->saved_input.target_x == 0 && chr->saved_input.target_y == 0)
-    chr->saved_input.target_y = -1;
-}
-
-/* CCharacter::OnDirectInput */
+/* CCharacter::OnDirectInput, and CCharacter::OnPredictedInput with it.
+ *
+ * DDNet keeps the input of a tee in m_LatestInput (which this function sets),
+ * m_LatestPrevInput (set to the same at its end), m_SavedInput (set to the
+ * same by OnPredictedInput, with the same correction of the aim), m_Input
+ * (from m_SavedInput on the tick) and the core's m_Input (from m_Input). Here
+ * it is one, core.input: a player gets either both calls or neither (the same
+ * flags decide in CPlayer::OnPredictedEarlyInput and
+ * CPlayer::OnPredictedInput, and the weapons fired between them kill and pause
+ * nobody), so outside this function all of them hold the same input, except
+ * for the moves of a frozen tee taken out of the two m_Input on the tick,
+ * which the core leaves out (HELD_MOVE, HELD_HOOK). In this function the one
+ * before is m_LatestPrevInput, and m_Input for the wanted weapon. */
 DDNET_HOT void character_on_direct_input(world_t *w, character_t *chr, const input_t *new_input) {
-  /* (latest_prev_input is latest_input already, from the end of this function the last time) */
-  chr->latest_input = *new_input;
+  const input_t prev_input = chr->core.input;
+  chr->core.input = *new_input;
   chr->num_inputs++;
 
   /* it is not allowed to aim in the center */
-  if (chr->latest_input.target_x == 0 && chr->latest_input.target_y == 0)
-    chr->latest_input.target_y = -1;
+  if (chr->core.input.target_x == 0 && chr->core.input.target_y == 0)
+    chr->core.input.target_y = -1;
 
   if (chr->num_inputs > 1) {
-    character_handle_weapon_switch(w, chr);
+    character_handle_weapon_switch(w, chr, &prev_input);
     /* CCharacter::FireWeapon, whose DoWeaponSwitch() changes nothing right after the one HandleWeaponSwitch()
      * ends with: a switch either happened there and nothing is queued anymore, or did not happen for a
      * reason that is still there (or nothing is owned to switch to, when that one was not reached) */
     if (chr->reload_timer == 0)
-      character_fire_weapon_switched(w, chr);
+      character_fire_weapon_switched(w, chr, prev_input.fire);
   }
-
-  chr->latest_prev_input = chr->latest_input;
 }
 
 /* ----------------------------------------------------------------- tiles */
@@ -655,7 +652,7 @@ DDNET_HOT static void character_handle_skippable_tiles(world_t *w, character_t *
 
   /* handle death-tiles and leaving gamelayer */
   if (character_touches_death_tile(w, chr) &&
-      !(character_team(w, chr) && w->teams.tee_finished[character_id(chr)])) {
+      !(character_team(w, chr) && w->players[character_id(chr)].tee_finished)) {
     character_die(w, chr, character_id(chr), WEAPON_WORLD);
     return;
   }
@@ -756,7 +753,7 @@ typedef struct chr_switch_ctx_t {
 static bool character_is_switch_active_cb(unsigned char number, void *user) {
   chr_switch_ctx_t *ctx = user;
   world_t *w = ctx->w;
-  return w->num_switchers != 0 && switch_status(w, number, character_team(w, ctx->chr));
+  return w->num_switchers != 0 && switch_status(w, number, character_team_row(w, ctx->chr));
 }
 
 /* CCharacter::SetTimeCheckpoint */
@@ -776,22 +773,20 @@ static void character_set_time_checkpoint(world_t *w, character_t *chr, int time
  * switch tiles in CCharacter::HandleTiles). */
 static void character_set_switch(world_t *w, character_t *chr, int number, bool status, int end_tick,
                                  int type) {
-  int team = character_team(w, chr);
-  ddnet_switch_state_t *switcher = world_switch_write(w, number, team);
-  if (!switcher)
-    return;
-  w->switches_touched[team] = true;
+  const int row = character_team_row(w, chr);
+  ddnet_switch_state_t *switcher = world_switch_write(w, number, row);
+  w->teams[row].switches_touched = true;
   switcher->status = status;
   switcher->end_tick = end_tick;
   switcher->type = (uint8_t)type;
   switcher->last_update_tick = server_tick(w);
   if (type == TILE_SWITCHTIMEDOPEN || type == TILE_SWITCHTIMEDCLOSE)
-    world_switch_timer_started(w, number, team);
+    world_switch_timer_started(w, number, row);
 }
 
 /* True if the switched tile the tee stands on is active for its team. */
 static bool character_switch_applies(world_t *w, character_t *chr, int switch_number) {
-  return switch_number == 0 || switch_status(w, switch_number, character_team(w, chr));
+  return switch_number == 0 || switch_status(w, switch_number, character_team_row(w, chr));
 }
 
 /* The time penalty and bonus tiles also move the start time of the whole team. */
@@ -1312,23 +1307,21 @@ static void character_handle_tune_layer(world_t *w, character_t *chr) {
 
 /* ------------------------------------------------------------------ tick */
 
-/* CCharacter::DDRaceTick: runs before the core. */
+/* What CCharacter::DDRaceTick clears in m_Input, which it takes from m_SavedInput: the moves of a tee in
+ * live freeze (hook is possible in live freeze), and also the hook of a frozen one. The core leaves it out
+ * of core.input. */
+static inline int character_held_input(const character_t *chr) {
+  return (chr->core.live_frozen ? HELD_MOVE : 0) | (chr->freeze_time > 0 ? HELD_MOVE | HELD_HOOK : 0);
+}
+
+/* CCharacter::DDRaceTick: runs before the core (the input it takes: character_held_input() before it). */
 DDNET_HOT static void character_ddrace_tick(world_t *w, character_t *chr) {
   const collision_t *col = collision(w);
 
-  chr->input = chr->saved_input;
   controller_set_armor_progress(chr, chr->freeze_time);
 
-  if (chr->core.live_frozen) {
-    chr->input.direction = 0;
-    chr->input.jump = 0;
-    /* Hook is possible in live freeze */
-  }
   if (chr->freeze_time > 0) {
     chr->freeze_time--;
-    chr->input.direction = 0;
-    chr->input.jump = 0;
-    chr->input.hook = 0;
     if (chr->freeze_time == 1)
       character_unfreeze(w, chr);
   }
@@ -1482,13 +1475,13 @@ DDNET_HOT void character_pre_tick(world_t *w, character_t *chr) {
   if (chr->paused)
     return;
 
+  const int held = character_held_input(chr);
   PROF_BEGIN(PROF_DDRACE_TICK);
   character_ddrace_tick(w, chr);
   PROF_END(PROF_DDRACE_TICK);
 
   PROF_BEGIN(PROF_CORE_TICK);
-  chr->core.input = chr->input;
-  core_tick(w, &chr->core, true, !w->config.sv_no_weak_hook,
+  core_tick(w, &chr->core, held, !w->config.sv_no_weak_hook,
             veq(chr->pos, chr->core.pos) ? chr->here_flags : collision_flags_at(collision(w), chr->core.pos));
   PROF_END(PROF_CORE_TICK);
 }
@@ -1561,18 +1554,16 @@ static inline __attribute__((always_inline)) bool character_tick_plain_fresh(wor
     }
   }
 
-  /* CCharacter::DDRaceTick */
-  chr->input = chr->saved_input;
+  /* CCharacter::DDRaceTick (with nothing held of the input: the tee is not frozen) */
   chr->armor = 10; /* controller_set_armor_progress() without freeze time */
   chr->tune_zone_old = chr->tune_zone;
   chr->tune_zone = 0;
   core->is_in_freeze = false;
   core->id = character_id(chr);
 
-  core->input = chr->input;
   /* (the tune zone was just set to 0) */
   const bool same = veq_fast(chr->pos, core->pos);
-  core_tick_tuned(w, core, true, true, same ? chr->here_flags : collision_flags_at(collision(w), core->pos),
+  core_tick_tuned(w, core, 0, true, same ? chr->here_flags : collision_flags_at(collision(w), core->pos),
                   &w->tuning_values[0], same && chr->here_on_map);
 
   /* CCharacter::HandleWeapons, where neither ninja nor jetpack have something to do */
@@ -1889,13 +1880,12 @@ void character_spawn(world_t *w, int client_id, vec2 pos) {
   chr->link.prev = -1;
   chr->link.next = -1;
 
-  /* constructor: the character starts with the last input of the player */
-  chr->input = player->input;
+  /* constructor: the character starts with the last input of the player (all its inputs, see
+   * character_on_direct_input()) */
+  chr->core.input = player->input;
   /* never initialize both to zero */
-  chr->input.target_x = 0;
-  chr->input.target_y = -1;
-
-  chr->latest_prev_input = chr->latest_input = chr->saved_input = chr->input;
+  chr->core.input.target_x = 0;
+  chr->core.input.target_y = -1;
 
   chr->last_time_cp = -1;
 

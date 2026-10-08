@@ -144,11 +144,18 @@ static void dump_draw(const ddnet_world_t *world) {
 static void dump_character(ddnet_world_t *world, int client_id) {
   int32_t rec[REC_NUM] = {0};
   const ddnet_character_t *chr = ddnet_world_character(world, client_id);
+#ifdef DDNET_PHYSICS_BACKEND_OPTIMIZED
+  const ddnet_player_t *slot = &world->players[client_id];
+  const bool started = slot->tee_started, finished = slot->tee_finished;
+  rec[REC_TEAM] = slot->team;
+#else
+  const bool started = world->teams.tee_started[client_id], finished = world->teams.tee_finished[client_id];
   rec[REC_TEAM] = world->teams.team[client_id];
+#endif
   int flags = 0;
-  if (world->teams.tee_started[client_id])
+  if (started)
     flags |= REC_FLAG_TEE_STARTED;
-  if (world->teams.tee_finished[client_id])
+  if (finished)
     flags |= REC_FLAG_TEE_FINISHED;
   if (chr) {
     const ddnet_character_core_t *core = &chr->core;
@@ -352,9 +359,13 @@ int main(int argc, char **argv) {
         PLAYER_SET_TEAM(&world, i, step->arg);
       } else if (step->action == ORACLE_ACTION_LOCK_TEAM) {
         /* CGameTeams::SetTeamLock: team 0 cannot be locked */
+#ifdef DDNET_PHYSICS_BACKEND_OPTIMIZED
+        ddnet_world_lock_team(&world, world.players[i].team, step->arg != 0);
+#else
         int team = world.teams.team[i];
         if (team != DDNET_TEAM_FLOCK)
           world.teams.team_locked[team] = step->arg != 0;
+#endif
       } else if (step->action == ORACLE_ACTION_TELEPORT) {
         ddnet_character_t *chr = ddnet_world_character(&world, i);
         if (chr) {
