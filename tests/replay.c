@@ -261,7 +261,7 @@ static void dump_world(ddnet_world_t *world, int num_players) {
   put(world->num_switchers);
   for (int s = 0; s < world->num_switchers; s++)
     for (int team = 0; team < num_players; team++)
-      put(world->switchers[s].status[team]);
+      put(ddnet_world_switch(world, s, team).status);
 }
 
 int main(int argc, char **argv) {

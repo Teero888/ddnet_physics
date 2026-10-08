@@ -264,12 +264,7 @@ DDNET_HOT static void character_handle_ninja(world_t *w, character_t *chr) {
           continue;
 
         /* make sure we haven't Hit this object before */
-        bool already_hit = false;
-        for (int j = 0; j < chr->num_objects_hit; j++) {
-          if (chr->hit_objects[j] == client_id)
-            already_hit = true;
-        }
-        if (already_hit)
+        if (chr->hit_objects[client_id >> 6] >> (client_id & 63) & 1)
           continue;
 
         /* check so we are sufficiently close */
@@ -278,7 +273,7 @@ DDNET_HOT static void character_handle_ninja(world_t *w, character_t *chr) {
 
         /* Hit a player, give them damage and stuffs... */
         EMIT_SOUND(w, other->pos, DDNET_SOUND_NINJA_HIT, character_id(chr));
-        chr->hit_objects[chr->num_objects_hit++] = client_id;
+        chr->hit_objects[client_id >> 6] |= (uint64_t)1 << (client_id & 63);
 
         character_take_damage(w, other, v2(0, -10.0f), NINJA_DAMAGE, character_id(chr), WEAPON_NINJA);
       }
@@ -486,7 +481,7 @@ DDNET_NOINLINE static void character_fire(world_t *w, character_t *chr) {
 
   case WEAPON_NINJA: {
     /* reset Hit objects */
-    chr->num_objects_hit = 0;
+    memset(chr->hit_objects, 0, sizeof(chr->hit_objects));
 
     chr->core.ninja.activation_dir = direction;
     chr->core.ninja.current_move_time = NINJA_MOVETIME * SERVER_TICK_SPEED / 1000;
@@ -761,7 +756,7 @@ typedef struct chr_switch_ctx_t {
 static bool character_is_switch_active_cb(unsigned char number, void *user) {
   chr_switch_ctx_t *ctx = user;
   world_t *w = ctx->w;
-  return w->num_switchers != 0 && switchers(w)[number].status[character_team(w, ctx->chr)];
+  return w->num_switchers != 0 && switch_status(w, number, character_team(w, ctx->chr));
 }
 
 /* CCharacter::SetTimeCheckpoint */
@@ -781,21 +776,22 @@ static void character_set_time_checkpoint(world_t *w, character_t *chr, int time
  * switch tiles in CCharacter::HandleTiles). */
 static void character_set_switch(world_t *w, character_t *chr, int number, bool status, int end_tick,
                                  int type) {
-  ddnet_switcher_t *switcher = &switchers(w)[number];
-  world_touch(w, TOUCH_SWITCHER, number);
   int team = character_team(w, chr);
+  ddnet_switch_state_t *switcher = world_switch_write(w, number, team);
+  if (!switcher)
+    return;
   w->switches_touched[team] = true;
-  switcher->status[team] = status;
-  switcher->end_tick[team] = end_tick;
-  switcher->type[team] = type;
-  switcher->last_update_tick[team] = server_tick(w);
+  switcher->status = status;
+  switcher->end_tick = end_tick;
+  switcher->type = (uint8_t)type;
+  switcher->last_update_tick = server_tick(w);
   if (type == TILE_SWITCHTIMEDOPEN || type == TILE_SWITCHTIMEDCLOSE)
     world_switch_timer_started(w, number, team);
 }
 
 /* True if the switched tile the tee stands on is active for its team. */
 static bool character_switch_applies(world_t *w, character_t *chr, int switch_number) {
-  return switch_number == 0 || switchers(w)[switch_number].status[character_team(w, chr)];
+  return switch_number == 0 || switch_status(w, switch_number, character_team(w, chr));
 }
 
 /* The time penalty and bonus tiles also move the start time of the whole team. */

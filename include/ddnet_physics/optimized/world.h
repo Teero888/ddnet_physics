@@ -117,8 +117,9 @@ typedef struct ddnet_character_t {
 
   ddnet_character_core_t core;
 
-  int hit_objects[DDNET_MAX_CLIENTS]; /* players already hit by the current ninja slash */
-  int num_objects_hit;
+  /* The players already hit by the current ninja slash, one bit per client id
+   * (DDNet keeps a list; only whether a player is in it matters). */
+  uint64_t hit_objects[(DDNET_MAX_CLIENTS + 63) / 64];
 
   int last_weapon;
   int queued_weapon;
@@ -229,24 +230,26 @@ typedef struct ddnet_player_t {
  * and finishes together. Put a player into a team with ddnet_player_set_team()
  * and lock a team by setting team_locked. */
 typedef struct ddnet_teams_t {
-  int team[DDNET_MAX_CLIENTS];
+  /* (a byte each: a team number is below DDNET_NUM_TEAMS, and a world is copied
+   * as a whole, so what it holds for every client and team is kept small) */
+  uint8_t team[DDNET_MAX_CLIENTS];
   bool is_solo[DDNET_MAX_CLIENTS];
   bool tee_started[DDNET_MAX_CLIENTS]; /* went through the start line */
   bool tee_finished[DDNET_MAX_CLIENTS];
-  ddnet_team_state_t team_state[DDNET_NUM_TEAMS];
+  uint8_t team_state[DDNET_NUM_TEAMS]; /* ddnet_team_state_t */
   /* The tees of a locked team stay in it when they die, and all die together. */
   bool team_locked[DDNET_NUM_TEAMS];
   int team_unfinishable_kill_tick[DDNET_NUM_TEAMS];
 } ddnet_teams_t;
 
-/* The state of one switch number, separate for every team. */
-typedef struct ddnet_switcher_t {
-  bool status[DDNET_NUM_TEAMS];
-  bool initial;
-  int end_tick[DDNET_NUM_TEAMS];
-  int type[DDNET_NUM_TEAMS];
-  int last_update_tick[DDNET_NUM_TEAMS];
-} ddnet_switcher_t;
+/* The state of one switch number for one team (DDNet's CSwitcher keeps one of
+ * these per team in every switch number). Read it with ddnet_world_switch(). */
+typedef struct ddnet_switch_state_t {
+  int end_tick;
+  int last_update_tick;
+  bool status;
+  uint8_t type; /* the switch tile that set it last */
+} ddnet_switch_state_t;
 
 /* The entity lists of DDNet's CGameWorld. Draggers, turrets, plasma bullets
  * and laser walls all live in the laser list. */
@@ -492,9 +495,11 @@ typedef struct ddnet_parked_projectile_t {
  * their range, by where the tee is: the map in cells of
  * DDNET_LASER_GRID_CELL tiles, and for every cell the entities whose range
  * touches it, in the order they tick in. The others have nothing to do on a
- * tick. It only changes with the ranges in the config. */
+ * tick. It only changes with the ranges in the config: a world with other
+ * ranges makes a new one. Copies of a world share it. */
 typedef struct ddnet_laser_grid_t {
   uint64_t id;                     /* a copy has the same */
+  int refs;                        /* the worlds that hold it (the last one frees it) */
   size_t bytes;                    /* of all of it */
   int dragger_range, plasma_range; /* the config it was made for */
   int cells_x, cells_y;
@@ -540,8 +545,16 @@ typedef struct ddnet_world_t {
 
   ddnet_teams_t teams;
 
-  ddnet_switcher_t *switchers;
-  int num_switchers; /* 0, or highest switch number + 1 */
+  /* The switches, by team and then by switch number: switch_states[team *
+   * num_switchers + number], for the teams below switch_teams. A team gets its
+   * row when something is written to one of its switches; until then all of
+   * them are as the map starts them (status true, the rest 0). DDNet keeps
+   * every team of every switch number, which is a kilobyte and more per number
+   * for the few teams that are used. */
+  ddnet_switch_state_t *switch_states;
+  int switch_teams;
+  bool *switch_initial; /* by switch number: what a reset of a team sets its status to */
+  int num_switchers;    /* 0, or highest switch number + 1 */
 
   /* By client id, for the ids below num_clients: the arrays grow when a client with a higher id joins (to
    * client_capacity entries, the ones past num_clients empty), so a world for a few players stays small to
@@ -666,5 +679,13 @@ typedef struct ddnet_world_t {
   /* (during the loop of the tick over CCharacter::PreTick with sv_no_weak_hook) */
   bool pre_ticking_characters;
 } ddnet_world_t;
+
+/* The state of switch number `number` (1 to num_switchers - 1) for team `team`. */
+static inline ddnet_switch_state_t ddnet_world_switch(const ddnet_world_t *world, int number, int team) {
+  if (team < world->switch_teams)
+    return world->switch_states[team * world->num_switchers + number];
+  const ddnet_switch_state_t start = {0, 0, true, 0};
+  return start;
+}
 
 #endif

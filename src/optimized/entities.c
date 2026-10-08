@@ -10,7 +10,7 @@
 
 /* A switched entity only acts on teams whose switch is active. */
 static bool switch_inactive_for(world_t *w, const entity_t *ent, int team) {
-  return ent->layer == LAYER_SWITCH && ent->number > 0 && !switchers(w)[ent->number].status[team];
+  return ent->layer == LAYER_SWITCH && ent->number > 0 && !switch_status(w, ent->number, team);
 }
 
 /* Entities on conveyor tiles move every 0.15 seconds. */
@@ -259,7 +259,7 @@ static void projectile_tick(world_t *w, int index) {
       for (int i = 0; i < num; ++i) {
         character_t *chr = &w->characters[ents[i]];
         if (ent->layer != LAYER_SWITCH || (ent->layer == LAYER_SWITCH && ent->number > 0 &&
-                                           switchers(w)[ent->number].status[character_team(w, chr)]))
+                                           switch_status(w, ent->number, character_team(w, chr))))
           character_freeze(w, chr);
       }
     } else if (target_chr) {
@@ -1712,7 +1712,7 @@ DDNET_NOINLINE static void pickups_tick_near(world_t *w, character_t *chr) {
         if (!(vdistance(chr->pos, pickup->pos) < radius + PHYSICAL_SIZE))
           continue;
         if (pickup->layer == LAYER_SWITCH && pickup->number > 0 &&
-            !switchers(w)[pickup->number].status[character_team(w, chr)])
+            !switch_status(w, pickup->number, character_team(w, chr)))
           continue;
         pickup_apply(w, pickup->type, pickup->subtype, pickup->pos, chr);
       }

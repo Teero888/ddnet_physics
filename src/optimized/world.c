@@ -84,6 +84,8 @@ void ddnet_character_changed(ddnet_world_t *w, int client_id) {
    * positions of the tick, the lazy bullets and the bullets that were known to be far from all tees (see
    * world_core_add()) */
   w->characters[client_id].quiet_known = false;
+  /* (its team may be another one now, see switch_status()) */
+  world_switch_reserve(w, w->teams.team[client_id]);
   w->tee_snapshot = NULL;
   w->lazy_wake = true;
   w->projectile_wakeup = 0;
@@ -348,6 +350,12 @@ void world_release_hooked(world_t *w, int client_id) {
 
 /* The range of a turret, dragger or laser wall as half the side of a square
  * around it, or -1 if it is none of them. No tee outside of it matters to it. */
+/* Copies of a world share its laser grid, which does not change: the last of them frees it. */
+static void laser_grid_release(ddnet_laser_grid_t *grid) {
+  if (grid && __atomic_sub_fetch(&grid->refs, 1, __ATOMIC_ACQ_REL) == 0)
+    free(grid);
+}
+
 static float laser_grid_range(const world_t *w, const entity_t *ent) {
   switch (ent->kind) {
   case DDNET_ENTITY_DRAGGER:
@@ -449,7 +457,8 @@ static const ddnet_laser_grid_t *laser_grid(world_t *w) {
   grid->cells_x = cells_x;
   grid->cells_y = cells_y;
   grid->always_all = always_all;
-  free(w->laser_grid);
+  grid->refs = 1;
+  laser_grid_release(w->laser_grid);
   w->laser_grid = grid;
   return grid;
 }
@@ -950,7 +959,7 @@ DDNET_HOT static void player_on_predicted_input(world_t *w, int client_id, const
 
 bool ddnet_player_join(ddnet_world_t *w, int client_id) {
   if (client_id < 0 || client_id >= MAX_CLIENTS || !world_reserve_clients(w, client_id + 1) ||
-      w->players[client_id].active)
+      w->players[client_id].active || !world_switch_reserve(w, w->teams.team[client_id]))
     return false;
 
   /* CPlayer::CPlayer and CPlayer::Reset */
@@ -1013,25 +1022,55 @@ void ddnet_player_set_team(ddnet_world_t *w, int client_id, int team) {
 
 /* The timer of one switch of one team. Returns whether it is still running. */
 static bool switch_timer_tick(world_t *w, int s, int j) {
-  ddnet_switcher_t *switcher = &switchers(w)[s];
-  if (switcher->type[j] != TILE_SWITCHTIMEDOPEN && switcher->type[j] != TILE_SWITCHTIMEDCLOSE)
+  /* (a team without a row has no timer running) */
+  if (j >= w->switch_teams)
     return false;
-  if (switcher->end_tick[j] <= server_tick(w) && switcher->type[j] == TILE_SWITCHTIMEDOPEN) {
-    world_touch(w, TOUCH_SWITCHER, s);
-    w->switches_touched[j] = true;
-    switcher->status[j] = false;
-    switcher->end_tick[j] = 0;
-    switcher->type[j] = TILE_SWITCHCLOSE;
+  const int index = j * w->num_switchers + s;
+  ddnet_switch_state_t *switcher = &w->switch_states[index];
+  if (switcher->type != TILE_SWITCHTIMEDOPEN && switcher->type != TILE_SWITCHTIMEDCLOSE)
     return false;
-  } else if (switcher->end_tick[j] <= server_tick(w) && switcher->type[j] == TILE_SWITCHTIMEDCLOSE) {
-    world_touch(w, TOUCH_SWITCHER, s);
+  if (switcher->end_tick <= server_tick(w) && switcher->type == TILE_SWITCHTIMEDOPEN) {
+    world_touch(w, TOUCH_SWITCHER, index);
     w->switches_touched[j] = true;
-    switcher->status[j] = true;
-    switcher->end_tick[j] = 0;
-    switcher->type[j] = TILE_SWITCHOPEN;
+    switcher->status = false;
+    switcher->end_tick = 0;
+    switcher->type = TILE_SWITCHCLOSE;
+    return false;
+  } else if (switcher->end_tick <= server_tick(w) && switcher->type == TILE_SWITCHTIMEDCLOSE) {
+    world_touch(w, TOUCH_SWITCHER, index);
+    w->switches_touched[j] = true;
+    switcher->status = true;
+    switcher->end_tick = 0;
+    switcher->type = TILE_SWITCHOPEN;
     return false;
   }
   return true;
+}
+
+DDNET_COLD bool world_switch_grow(world_t *w, int team) {
+  /* rows for the teams up to this one, as the map starts their switches (a
+   * copy of only what changed is then not enough anymore, see ddnet_world_copy()) */
+  const int rows = team + 1;
+  if (w->num_switchers) {
+    ddnet_switch_state_t *states =
+        realloc(w->switch_states, (size_t)rows * (size_t)w->num_switchers * sizeof(*states));
+    if (!states)
+      return false;
+    const ddnet_switch_state_t start = {0, 0, true, 0};
+    for (int i = w->switch_teams * w->num_switchers; i < rows * w->num_switchers; i++)
+      states[i] = start;
+    w->switch_states = states;
+  }
+  w->switch_teams = rows;
+  return true;
+}
+
+ddnet_switch_state_t *world_switch_write(world_t *w, int number, int team) {
+  if (!world_switch_reserve(w, team))
+    return NULL;
+  const int index = team * w->num_switchers + number;
+  world_touch(w, TOUCH_SWITCHER, index);
+  return &w->switch_states[index];
 }
 
 /* A switch of a team got a timer. */
@@ -1105,7 +1144,7 @@ DDNET_NOINLINE static void world_switch_timers_tick(world_t *w) {
     /* too many timers to keep track of: look at all of them, like DDNet */
     bool any = false;
     for (int s = 0; s < w->num_switchers; s++)
-      for (int j = 0; j < NUM_DDRACE_TEAMS; ++j)
+      for (int j = 0; j < w->switch_teams; ++j)
         any |= switch_timer_tick(w, s, j);
     w->timed_switches_overflow = any;
   } else {
@@ -1152,6 +1191,9 @@ void ddnet_world_changed(ddnet_world_t *w) {
   world_touch_reset(w);
   /* the switchers may have been written to */
   memset(w->switches_touched, 1, sizeof(w->switches_touched));
+  /* (and the teams, see switch_status()) */
+  for (int n = 0; n < w->num_players; n++)
+    world_switch_reserve(w, w->teams.team[w->player_ids[n]]);
 }
 
 /* Convert the tuning to floats exactly like every read of a CTuneParam does. */
@@ -1406,9 +1448,8 @@ static void world_execute_map_command(void *user, const char *name, char *args) 
     if (ddnet_console_parse_args(args, "i", argv) == 1) {
       int number = (int)strtol(argv[0], NULL, 10);
       if (number >= 0 && number <= w->num_switchers - 1) {
-        switchers(w)[number].initial = false;
+        w->switch_initial[number] = false;
         /* a reset of the switches of a team leaves this one in another state now */
-        world_touch(w, TOUCH_SWITCHER, number);
         memset(w->switches_touched, 1, sizeof(w->switches_touched));
       }
     }
@@ -1441,20 +1482,13 @@ bool ddnet_world_init(ddnet_world_t *w, const ddnet_collision_t *col, const ddne
   w->tuning_values = calloc((size_t)w->num_tune_zones, sizeof(*w->tuning_values));
   /* CWorldCore::InitSwitchers */
   w->num_switchers = col->highest_switch_number > 0 ? col->highest_switch_number + 1 : 0;
-  w->switchers = calloc((size_t)(w->num_switchers ? w->num_switchers : 1), sizeof(*w->switchers));
-  if (!w->players || !w->characters || !w->tuning || !w->tuning_values || !w->switchers)
+  w->switch_initial = calloc((size_t)(w->num_switchers ? w->num_switchers : 1), sizeof(*w->switch_initial));
+  if (!w->players || !w->characters || !w->tuning || !w->tuning_values || !w->switch_initial)
     goto fail;
 
-  for (int s = 0; s < w->num_switchers; s++) {
-    ddnet_switcher_t *switcher = &w->switchers[s];
-    switcher->initial = true;
-    for (int j = 0; j < NUM_DDRACE_TEAMS; j++) {
-      switcher->status[j] = true;
-      switcher->end_tick[j] = 0;
-      switcher->type[j] = 0;
-      switcher->last_update_tick[j] = 0;
-    }
-  }
+  /* (no team has a row of its own yet: all switches are on, see world_switch_write()) */
+  for (int s = 0; s < w->num_switchers; s++)
+    w->switch_initial[s] = true;
 
   /* Reset Tunezones */
   for (int i = 0; i < w->num_tune_zones; i++)
@@ -1527,7 +1561,8 @@ fail:
 void ddnet_world_free(ddnet_world_t *w) {
   free(w->tuning);
   free(w->tuning_values);
-  free(w->switchers);
+  free(w->switch_states);
+  free(w->switch_initial);
   free(w->players);
   free(w->characters);
   free(w->entities);
@@ -1535,7 +1570,7 @@ void ddnet_world_free(ddnet_world_t *w) {
   free(w->gun_timers);
   free(w->projectile_memo);
   free(w->sight_memo);
-  free(w->laser_grid);
+  laser_grid_release(w->laser_grid);
   free(w->laser_tiles);
   free(w->touch_log);
   free(w->projectile_awake);
@@ -1569,12 +1604,68 @@ bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
   if (dst == src)
     return true;
 
-  /* keep the buffers of dst */
-  ddnet_world_t old = *dst;
+  /* keep the buffers of dst, and what says how it relates to src (only that:
+   * the rest of it is overwritten, and a copy of all of it would double the
+   * bytes a copy moves) */
+  const struct {
+    ddnet_tuning_t *tuning;
+    ddnet_tuning_values_t *tuning_values;
+    ddnet_switch_state_t *switch_states;
+    bool *switch_initial;
+    ddnet_player_t *players;
+    ddnet_character_t *characters;
+    ddnet_entity_t *entities;
+    ddnet_dragger_targets_t *dragger_targets;
+    ddnet_gun_timers_t *gun_timers;
+    ddnet_projectile_memo_t *projectile_memo;
+    ddnet_sight_memo_t *sight_memo;
+    uint32_t *touch_log;
+    ddnet_laser_grid_t *laser_grid;
+    ddnet_laser_tile_t *laser_tiles;
+    int *projectile_awake;
+    ddnet_parked_projectile_t *projectile_parked;
+    uint64_t lineage, lineage_base, origin_lineage;
+    int entity_capacity, client_capacity, projectile_awake_capacity, projectile_parked_capacity;
+    int num_clients, num_tune_zones, num_switchers, switch_teams, num_draggers, num_guns;
+    int touch_count, origin_pos;
+  } old = {
+      dst->tuning,
+      dst->tuning_values,
+      dst->switch_states,
+      dst->switch_initial,
+      dst->players,
+      dst->characters,
+      dst->entities,
+      dst->dragger_targets,
+      dst->gun_timers,
+      dst->projectile_memo,
+      dst->sight_memo,
+      dst->touch_log,
+      dst->laser_grid,
+      dst->laser_tiles,
+      dst->projectile_awake,
+      dst->projectile_parked,
+      dst->lineage,
+      dst->lineage_base,
+      dst->origin_lineage,
+      dst->entity_capacity,
+      dst->client_capacity,
+      dst->projectile_awake_capacity,
+      dst->projectile_parked_capacity,
+      dst->num_clients,
+      dst->num_tune_zones,
+      dst->num_switchers,
+      dst->switch_teams,
+      dst->num_draggers,
+      dst->num_guns,
+      dst->touch_count,
+      dst->origin_pos,
+  };
   *dst = *src;
   dst->tuning = old.tuning;
   dst->tuning_values = old.tuning_values;
-  dst->switchers = old.switchers;
+  dst->switch_states = old.switch_states;
+  dst->switch_initial = old.switch_initial;
   dst->players = old.players;
   dst->characters = old.characters;
   dst->entities = old.entities;
@@ -1612,16 +1703,12 @@ bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
     dst->projectile_parked_capacity = src->projectile_parked_capacity;
   }
 
-  /* the same for all copies of a world: only copied to where it is not yet */
-  if (!src->laser_grid) {
-    free(dst->laser_grid);
-    dst->laser_grid = NULL;
-  } else if (!dst->laser_grid || dst->laser_grid->id != src->laser_grid->id) {
-    ddnet_laser_grid_t *grid = realloc(dst->laser_grid, src->laser_grid->bytes);
-    if (!grid)
-      goto fail;
-    memcpy(grid, src->laser_grid, src->laser_grid->bytes);
-    dst->laser_grid = grid;
+  /* the same for all copies of a world: shared, not copied */
+  if (src->laser_grid != dst->laser_grid) {
+    if (src->laser_grid)
+      __atomic_add_fetch(&src->laser_grid->refs, 1, __ATOMIC_RELAXED);
+    laser_grid_release(dst->laser_grid);
+    dst->laser_grid = src->laser_grid;
   }
 
   dst->client_capacity = old.client_capacity;
@@ -1654,6 +1741,7 @@ bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
   int src_from = 0, src_to = 0, dst_from = 0, dst_to = 0;
   bool sparse = false;
   if (old.tuning && old.num_tune_zones == src->num_tune_zones && old.num_switchers == src->num_switchers &&
+      old.switch_teams == src->switch_teams &&
       old.num_draggers == src->num_draggers && old.num_guns == src->num_guns && src->lineage && old.lineage) {
     if (old.origin_lineage == src->lineage && old.origin_pos <= src->touch_count) {
       sparse = true;
@@ -1682,7 +1770,7 @@ bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
         const int index = (int)(log[i] & 0xffffff);
         switch (log[i] >> 24) {
         case TOUCH_SWITCHER:
-          dst->switchers[index] = src->switchers[index];
+          dst->switch_states[index] = src->switch_states[index];
           break;
         case TOUCH_DRAGGER_TARGETS:
           dst->dragger_targets[index] = src->dragger_targets[index];
@@ -1711,7 +1799,9 @@ bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
         memcmp(dst->tuning, src->tuning, (size_t)src->num_tune_zones * sizeof(*dst->tuning)) ||
         memcmp(dst->tuning_values, src->tuning_values,
                (size_t)src->num_tune_zones * sizeof(*dst->tuning_values)) ||
-        memcmp(dst->switchers, src->switchers, (size_t)src->num_switchers * sizeof(*dst->switchers)) ||
+        memcmp(dst->switch_states, src->switch_states,
+               (size_t)src->switch_teams * src->num_switchers * sizeof(*dst->switch_states)) ||
+        memcmp(dst->switch_initial, src->switch_initial, (size_t)src->num_switchers) ||
         memcmp(dst->dragger_targets, src->dragger_targets,
                (size_t)src->num_draggers * sizeof(*dst->dragger_targets)) ||
         memcmp(dst->gun_timers, src->gun_timers, (size_t)src->num_guns * sizeof(*dst->gun_timers)) ||
@@ -1730,8 +1820,10 @@ bool ddnet_world_copy(ddnet_world_t *dst, const ddnet_world_t *src) {
                      sizeof(*dst->tuning)) ||
         !copy_buffer(&dst->tuning_values, old.num_tune_zones, src->tuning_values, src->num_tune_zones,
                      sizeof(*dst->tuning_values)) ||
-        !copy_buffer(&dst->switchers, old.num_switchers, src->switchers, src->num_switchers,
-                     sizeof(*dst->switchers)) ||
+        !copy_buffer(&dst->switch_states, old.switch_teams * old.num_switchers, src->switch_states,
+                     src->switch_teams * src->num_switchers, sizeof(*dst->switch_states)) ||
+        !copy_buffer(&dst->switch_initial, old.num_switchers, src->switch_initial, src->num_switchers,
+                     sizeof(*dst->switch_initial)) ||
         !copy_buffer(&dst->dragger_targets, old.num_draggers, src->dragger_targets, src->num_draggers,
                      sizeof(*dst->dragger_targets)) ||
         !copy_buffer(&dst->gun_timers, old.num_guns, src->gun_timers, src->num_guns,

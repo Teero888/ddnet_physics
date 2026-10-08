@@ -168,5 +168,7 @@
 #define world_release_hooked ddnet_ev__world_release_hooked
 #define world_remove_entities_from_player ddnet_ev__world_remove_entities_from_player
 #define world_remove_entity ddnet_ev__world_remove_entity
+#define world_switch_grow ddnet_ev__world_switch_grow
 #define world_switch_timer_started ddnet_ev__world_switch_timer_started
+#define world_switch_write ddnet_ev__world_switch_write
 #define world_touch_reset ddnet_ev__world_touch_reset

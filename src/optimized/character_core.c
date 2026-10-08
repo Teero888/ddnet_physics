@@ -134,7 +134,7 @@ static bool core_is_switch_active_cb(unsigned char number, void *user) {
   core_t *core = ctx->core;
   if (w->num_switchers != 0)
     if (core->id != -1)
-      return switchers(w)[number].status[teams_team(w, core->id)];
+      return switch_status(w, number, teams_team(w, core->id));
   return false;
 }
 

@@ -423,4 +423,19 @@ typedef struct ddnet_world_t {
   ddnet_sound_fn sound;
 } ddnet_world_t;
 
+/* The state of switch number `number` for team `team` (as the optimized
+ * backend has it, which keeps it by team). */
+typedef struct ddnet_switch_state_t {
+  int end_tick;
+  int last_update_tick;
+  bool status;
+  uint8_t type;
+} ddnet_switch_state_t;
+static inline ddnet_switch_state_t ddnet_world_switch(const ddnet_world_t *world, int number, int team) {
+  const ddnet_switcher_t *switcher = &world->switchers[number];
+  const ddnet_switch_state_t state = {switcher->end_tick[team], switcher->last_update_tick[team],
+                                      switcher->status[team], (uint8_t)switcher->type[team]};
+  return state;
+}
+
 #endif

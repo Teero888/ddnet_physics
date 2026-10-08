@@ -9,7 +9,7 @@
 /* ------------------------------------------------------------ CTeamsCore */
 
 bool teams_can_keep_hook(const world_t *w, int client_id1, int client_id2) {
-  const int *team = w->teams.team;
+  const uint8_t *team = w->teams.team;
   if (client_id1 == client_id2)
     return true;
   return team[client_id1] == team[client_id2];
@@ -51,15 +51,16 @@ void teams_reset_switchers(world_t *w, int team) {
     return;
   w->switches_touched[team] = false;
   for (int i = 0; i < w->num_switchers; i++) {
-    ddnet_switcher_t *switcher = &switchers(w)[i];
     /* (only the ones that are not like that already are written to, and noted for ddnet_world_copy()) */
-    if (switcher->status[team] == switcher->initial && switcher->end_tick[team] == 0 &&
-        switcher->type[team] == TILE_SWITCHOPEN)
+    const ddnet_switch_state_t state = switch_state(w, i, team);
+    if (state.status == w->switch_initial[i] && state.end_tick == 0 && state.type == TILE_SWITCHOPEN)
       continue;
-    world_touch(w, TOUCH_SWITCHER, i);
-    switcher->status[team] = switcher->initial;
-    switcher->end_tick[team] = 0;
-    switcher->type[team] = TILE_SWITCHOPEN;
+    ddnet_switch_state_t *switcher = world_switch_write(w, i, team);
+    if (!switcher)
+      continue;
+    switcher->status = w->switch_initial[i];
+    switcher->end_tick = 0;
+    switcher->type = TILE_SWITCHOPEN;
   }
 }
 
@@ -261,6 +262,9 @@ void teams_on_character_finish(world_t *w, int client_id) {
 
 /* CGameTeams::SetForceCharacterTeam */
 void teams_set_force_character_team(world_t *w, int client_id, int team) {
+  /* (no memory for the switches of the team: the player stays where it is) */
+  if (!world_switch_reserve(w, team))
+    return;
   teams_t *teams = &w->teams;
   teams->tee_started[client_id] = false;
   teams->tee_finished[client_id] = false;

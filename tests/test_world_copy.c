@@ -53,7 +53,14 @@ static int worlds_equal(const ddnet_world_t *a, const ddnet_world_t *b) {
         ea->link.next != eb->link.next || ea->marked_for_destroy != eb->marked_for_destroy)
       return 0;
   }
-  return memcmp(a->switchers, b->switchers, (size_t)a->num_switchers * sizeof(*a->switchers)) == 0;
+  for (int s = 0; s < a->num_switchers; s++)
+    for (int team = 0; team < DDNET_NUM_TEAMS; team++) {
+      const ddnet_switch_state_t sa = ddnet_world_switch(a, s, team), sb = ddnet_world_switch(b, s, team);
+      if (sa.status != sb.status || sa.end_tick != sb.end_tick || sa.type != sb.type ||
+          sa.last_update_tick != sb.last_update_tick)
+        return 0;
+    }
+  return 1;
 }
 
 int main(int argc, char **argv) {

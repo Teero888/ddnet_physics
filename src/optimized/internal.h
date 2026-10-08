@@ -68,6 +68,9 @@ typedef ddnet_tuning_values_t tuning_t;
 #define ddnet_tune(value) (value)
 typedef ddnet_teams_t teams_t;
 
+/* client ids (player_ids, core_ids) and team numbers (teams.team) are kept in bytes */
+_Static_assert(DDNET_MAX_CLIENTS <= 256 && DDNET_NUM_TEAMS <= 256, "client ids and teams must fit in a byte");
+
 enum {
   MAX_CLIENTS = DDNET_MAX_CLIENTS,
   TEAM_FLOCK = DDNET_TEAM_FLOCK,
@@ -250,7 +253,24 @@ bool game_layer_clipped(const world_t *w, vec2 check_pos);
 bool get_nearest_air_pos(const world_t *w, vec2 pos, vec2 prev_pos, vec2 *out_pos);
 bool get_nearest_air_pos_player(const world_t *w, vec2 player_pos, vec2 *out_pos);
 
-static inline ddnet_switcher_t *switchers(world_t *w) { return w->switchers; }
+/* Whether switch number `number` is on for team `team`, a team a tee is in:
+ * those always have their row (world_switch_reserve() at join and team
+ * change), so that this is one load. */
+static inline bool switch_status(const world_t *w, int number, int team) {
+  return w->switch_states[team * w->num_switchers + number].status;
+}
+/* The state of a switch of a team, for reading. */
+static inline ddnet_switch_state_t switch_state(const world_t *w, int number, int team) {
+  return ddnet_world_switch(w, number, team);
+}
+/* The state of a switch of a team, for writing: the team gets its row first.
+ * NULL if there is no memory for it. */
+ddnet_switch_state_t *world_switch_write(world_t *w, int number, int team);
+/* Rows for the switches of the teams up to `team`. False if there is no memory for them. */
+bool world_switch_grow(world_t *w, int team);
+static inline bool world_switch_reserve(world_t *w, int team) {
+  return team < w->switch_teams || world_switch_grow(w, team);
+}
 
 /* ---------------------------------------------------- character_core.c */
 
@@ -437,7 +457,7 @@ static inline int teams_team(const world_t *w, int client_id) { return w->teams.
 bool teams_can_keep_hook(const world_t *w, int client_id1, int client_id2);
 /* CGameTeams::CanCollide (inline: the loops over pairs of tees ask it for every pair) */
 static inline bool teams_can_collide(const world_t *w, int client_id1, int client_id2) {
-  const int *team = w->teams.team;
+  const uint8_t *team = w->teams.team;
   if (client_id1 == client_id2)
     return true;
   if (w->teams.is_solo[client_id1] || w->teams.is_solo[client_id2])
