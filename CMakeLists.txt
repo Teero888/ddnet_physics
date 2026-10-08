@@ -1,205 +1,166 @@
-cmake_minimum_required(VERSION 3.18)
-# set(CMAKE_C_COMPILER /usr/share/clang) # change to your path if it can't be found automatically
-set(CMAKE_C_STANDARD 99)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_C_EXTENSIONS OFF)
+cmake_minimum_required(VERSION 3.15)
+project(ddnet_physics C)
 
-project(ddnet_physics LANGUAGES C)
+option(DDNET_PHYSICS_BUILD_TESTS "Build the tests and the oracle comparison tool" ON)
+option(DDNET_PHYSICS_BUILD_EXAMPLES "Build the examples" ON)
+set(DDNET_MAX_CLIENTS 128 CACHE STRING
+    "Number of player slots. 128 is what DDNet uses; smaller worlds are smaller to copy.")
 
-include(CTest)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(ENABLE_AGGRESSIVE_OPTIM "Enable aggressive optimizations with LTO and native tuning" OFF)
-option(BENCHMARKS "Whether to compile benchmarks" OFF)
-option(EXAMPLES "Whether to compile examples" OFF)
-option(SHARED_LIB "Build ddnet_physics as a shared library" OFF)
+add_subdirectory(libs/ddnet_maploader EXCLUDE_FROM_ALL)
 
-if(SHARED_LIB)
-    set(DDNET_PHYSICS_LIB_TYPE SHARED)
+# Bit-identical results depend on the compiler doing the float math exactly as
+# written: no fused multiply-add, no reordering, no x87 excess precision.
+add_library(ddnet_physics_options INTERFACE)
+target_compile_options(ddnet_physics_options INTERFACE
+  -ffp-contract=off -fno-fast-math -fno-math-errno
+  -Wall -Wextra -Wno-unused-parameter)
+target_compile_definitions(ddnet_physics_options INTERFACE _DEFAULT_SOURCE)
+
+# The two implementations have different structures, so one library is one of
+# them: the backend is chosen here, at compile time.
+set(DDNET_PHYSICS_BACKEND reference CACHE STRING
+    "Implementation to build: reference (readable port of DDNet) or optimized")
+set_property(CACHE DDNET_PHYSICS_BACKEND PROPERTY STRINGS reference optimized)
+
+set(DDNET_PHYSICS_COMMON
+  src/common/config.c
+  src/common/console.c
+  src/common/tuning.c)
+
+if(DDNET_PHYSICS_BACKEND STREQUAL "reference")
+  set(DDNET_PHYSICS_BACKEND_SOURCES
+    src/reference/character.c
+    src/reference/character_core.c
+    src/reference/collision.c
+    src/reference/entities.c
+    src/reference/gamecontroller.c
+    src/reference/teams.c
+    src/reference/world.c)
+  set(DDNET_PHYSICS_BACKEND_DEFINITION DDNET_PHYSICS_BACKEND_REFERENCE)
+elseif(DDNET_PHYSICS_BACKEND STREQUAL "optimized")
+  # One translation unit, so that everything on the tick path can be inlined.
+  set(DDNET_PHYSICS_BACKEND_SOURCES src/optimized/unity.c)
+  # The event build (unity_events.c): the same code once more, which calls the
+  # callbacks of include/ddnet_physics/events.h, as the functions ddnet_ev_*.
+  # The build without events is not changed by it.
+  option(DDNET_PHYSICS_EVENTS "Also build the optimized backend with events (ddnet_ev_*)" ON)
+  if(DDNET_PHYSICS_EVENTS)
+    list(APPEND DDNET_PHYSICS_BACKEND_SOURCES src/optimized/unity_events.c)
+    set(DDNET_PHYSICS_EVENTS_DEFINITION DDNET_PHYSICS_HAS_EVENTS)
+  endif()
+  # GCC stops inlining earlier than is good for it here: 3 % more ticks per
+  # second on every map that was tried. (What must stay out of line is marked
+  # DDNET_NOINLINE.)
+  if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    set_source_files_properties(src/optimized/unity.c src/optimized/unity_events.c PROPERTIES COMPILE_OPTIONS
+      "-finline-limit=2000;--param=max-inline-insns-single=2000;--param=inline-unit-growth=400")
+  endif()
+  set(DDNET_PHYSICS_BACKEND_DEFINITION DDNET_PHYSICS_BACKEND_OPTIMIZED)
 else()
-    set(DDNET_PHYSICS_LIB_TYPE STATIC)
+  message(FATAL_ERROR "ddnet_physics: unknown DDNET_PHYSICS_BACKEND '${DDNET_PHYSICS_BACKEND}'")
 endif()
 
-# Define the library
-add_library(ddnet_physics ${DDNET_PHYSICS_LIB_TYPE}
-    include/ddnet_physics/collision.h
-    include/ddnet_physics/config.h
-    include/ddnet_physics/gamecore.h
-    include/ddnet_physics/tuning.h
-    include/ddnet_physics/vmath.h
-    src/collision.c
-    src/collision_tables.h
-    src/gamecore.c
-    src/settings.c
-    src/settings.h
-    src/tiles.c
-    src/tiles.h
-)
-
-include(CheckCCompilerFlag)
-include(CheckLinkerFlag)
-
-function(add_c_flag_if_compiler_supported VARIABLE FLAG)
-  if(ARGC GREATER 2)
-    set(CHECKED_FLAG "${ARGV2}")
-  else()
-    set(CHECKED_FLAG "${FLAG}")
+# A shared library for programs that load several modules which all simulate
+# worlds of one another: one copy of the library for all of them (the worlds
+# are numbered by it, see ddnet_world_copy). Only the functions ddnet_* are
+# exported.
+option(DDNET_PHYSICS_SHARED "Build a shared library" OFF)
+if(DDNET_PHYSICS_SHARED)
+  add_library(ddnet_physics SHARED ${DDNET_PHYSICS_COMMON} ${DDNET_PHYSICS_BACKEND_SOURCES})
+  set_target_properties(ddnet_physics PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  set_target_properties(ddnet_map_loader PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  if(NOT WIN32 AND NOT APPLE)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ddnet_physics.map" "{ global: ddnet_*; local: *; };\n")
+    target_link_options(ddnet_physics PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_BINARY_DIR}/ddnet_physics.map")
   endif()
-  string(REGEX REPLACE "[^A-Za-z0-9]" "_" CONFIG_VARIABLE "FLAG_SUPPORTED${CHECKED_FLAG}")
-  check_c_compiler_flag("${CHECKED_FLAG}" ${CONFIG_VARIABLE})
-  if(${CONFIG_VARIABLE})
-    if(${VARIABLE})
-      set("${VARIABLE}" "${${VARIABLE}};${FLAG}" PARENT_SCOPE)
-    else()
-      set("${VARIABLE}" "${FLAG}" PARENT_SCOPE)
-    endif()
-  endif()
-endfunction()
-
-function(add_c_flag_if_linker_supported VARIABLE FLAG)
-  if(ARGC GREATER 2)
-    set(CHECKED_FLAG "${ARGV2}")
-  else()
-    set(CHECKED_FLAG "${FLAG}")
-  endif()
-  string(REGEX REPLACE "[^A-Za-z0-9]" "_" CONFIG_VARIABLE "LINKERFLAG_SUPPORTED${CHECKED_FLAG}")
-  check_linker_flag(C "${CHECKED_FLAG}" ${CONFIG_VARIABLE})
-  if(${CONFIG_VARIABLE})
-    if(${VARIABLE})
-      set("${VARIABLE}" "${${VARIABLE}};${FLAG}" PARENT_SCOPE)
-    else()
-      set("${VARIABLE}" "${FLAG}" PARENT_SCOPE)
-    endif()
-  endif()
-endfunction()
-
-# include directories
-target_include_directories(ddnet_physics PUBLIC include)
-
-if(SHARED_LIB)
-    target_compile_definitions(ddnet_physics PRIVATE "DDNET_PHYSICS_API=__declspec(dllexport)")
-    target_compile_definitions(ddnet_physics INTERFACE "DDNET_PHYSICS_API=__declspec(dllimport)")
 else()
-    target_compile_definitions(ddnet_physics PUBLIC "DDNET_PHYSICS_API=")
+  add_library(ddnet_physics STATIC ${DDNET_PHYSICS_COMMON} ${DDNET_PHYSICS_BACKEND_SOURCES})
 endif()
 
-# default compiler options
-add_c_flag_if_compiler_supported(BASE_C_FLAGS -Wall)
-add_c_flag_if_compiler_supported(BASE_C_FLAGS -msse4.1)
-add_c_flag_if_compiler_supported(BASE_C_FLAGS -mavx2)
-add_c_flag_if_compiler_supported(BASE_C_FLAGS -mfma)
-add_c_flag_if_compiler_supported(BASE_C_FLAGS -ffast-math)
-add_c_flag_if_compiler_supported(BASE_C_FLAGS -g)
-target_compile_options(ddnet_physics PRIVATE ${BASE_C_FLAGS})
-
-# debug and optimized configurations
-add_c_flag_if_linker_supported(DEBUG_C_LINK_FLAGS -fsanitize=address,undefined)
-
-add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -O3)
-add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -funroll-loops)
-add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -mfpmath=sse)
-add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -fomit-frame-pointer)
-add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -fno-trapping-math)
-add_c_flag_if_compiler_supported(RELEASE_C_FLAGS -fno-signed-zeros)
-
-target_link_options(ddnet_physics PRIVATE
-    $<$<CONFIG:DEBUG>:${DEBUG_C_LINK_FLAGS}>
-    $<$<CONFIG:RELEASE>:${RELEASE_C_LINK_FLAGS}>
-)
-
-target_compile_options(ddnet_physics PRIVATE
-    $<$<CONFIG:DEBUG>:${DEBUG_C_FLAGS}>
-    $<$<CONFIG:RELEASE>:${RELEASE_C_FLAGS}>
-)
-
-# Aggressive optimizations if enabled
-if(ENABLE_AGGRESSIVE_OPTIM)
-    target_compile_options(ddnet_physics PRIVATE
-        -flto
-        -mllvm -inline-threshold=500
-        -march=native
-        -mtune=native
-    )
-    target_link_options(ddnet_physics PUBLIC -flto)
-	message("Aggressive optimization enabled")
+# The instructions of the CPU this is built on (AVX and so on). The results
+# stay the same: nothing is contracted or reordered (see above), the same
+# operations only take fewer instructions. Worth 3 % for the optimized backend.
+# The library then only runs on CPUs that have what this one has.
+option(DDNET_PHYSICS_NATIVE "Build for the CPU of this machine (-march=native)" OFF)
+# Or for a set of CPUs, for a library that is handed out: x86-64-v3 (AVX2 and
+# FMA, Haswell and later) takes the paths for SSE4.1 and AVX the code has and
+# gives the same results (the FMA build of glibc's powf is one of the two that
+# velocity_ramp_prepare() knows).
+set(DDNET_PHYSICS_ARCH "" CACHE STRING "-march for the library if not native (for example x86-64-v3); empty for the compiler's default")
+if(DDNET_PHYSICS_NATIVE)
+  target_compile_options(ddnet_physics PRIVATE -march=native)
+elseif(DDNET_PHYSICS_ARCH)
+  target_compile_options(ddnet_physics PRIVATE -march=${DDNET_PHYSICS_ARCH})
 endif()
 
-set(PGO_STAGE "NONE" CACHE STRING "PGO stage: NONE, GENERATE or USE")
-set_property(CACHE PGO_STAGE PROPERTY STRINGS NONE GENERATE USE)
-set(PGO_PROFILE_DIR "${CMAKE_BINARY_DIR}/pgo" CACHE PATH
-    "Directory raw profiles are written to during the GENERATE stage")
-set(PGO_PROFILE_DATA "${CMAKE_BINARY_DIR}/pgo/merged.profdata" CACHE FILEPATH
-    "Merged profile consumed by the USE stage")
-
-if(NOT PGO_STAGE STREQUAL "NONE")
-    set(PGO_WARN_FLAGS)
-    if(PGO_STAGE STREQUAL "GENERATE")
-        set(PGO_C_FLAGS -fprofile-generate=${PGO_PROFILE_DIR})
-    elseif(PGO_STAGE STREQUAL "USE")
-        if(NOT EXISTS "${PGO_PROFILE_DATA}")
-            message(FATAL_ERROR
-                "PGO_STAGE=USE but no merged profile at ${PGO_PROFILE_DATA}. "
-                "Run the GENERATE stage and merge the raw profiles first.")
-        endif()
-        if(CMAKE_C_COMPILER_ID MATCHES "Clang")
-            set(PGO_C_FLAGS -fprofile-use=${PGO_PROFILE_DATA})
-            set(PGO_WARN_FLAGS -Wno-profile-instr-out-of-date
-                               -Wno-profile-instr-unprofiled)
-        else()
-            set(PGO_C_FLAGS -fprofile-use=${PGO_PROFILE_DIR} -fprofile-correction)
-            set(PGO_WARN_FLAGS -Wno-missing-profile)
-        endif()
-    else()
-        message(FATAL_ERROR "PGO_STAGE must be NONE, GENERATE or USE (got '${PGO_STAGE}')")
-    endif()
-
-    target_compile_options(ddnet_physics PRIVATE ${PGO_C_FLAGS} ${PGO_WARN_FLAGS})
-    # GENERATE needs the profile runtime linked in; USE needs the profile
-    # visible to LTO codegen. PUBLIC for the same reason as -flto above. The
-    # -Wno-* flags are compile-only.
-    target_link_options(ddnet_physics PUBLIC ${PGO_C_FLAGS})
-    message(STATUS "ddnet_physics PGO stage: ${PGO_STAGE}")
+# Jumps kept off 32-byte boundaries. On Intel CPUs from Skylake to Comet Lake
+# with the microcode for their JCC erratum, a jump that crosses or ends on one
+# makes its 32 bytes of code come from the decoders on every pass instead of
+# from the cache of decoded instructions, which the tick of a tee does not fit
+# into anyway. The assembler pads the code with prefixes and no-ops; nothing
+# else changes. On a Core i5-7500 (Kaby Lake) 0.4 % faster without a profile,
+# and 2 % with random inputs and 0.9 % on the run with one.
+option(DDNET_PHYSICS_JCC_PADDING "Keep jumps off 32-byte boundaries (Intel's JCC erratum), if the toolchain can"
+       ON)
+if(DDNET_PHYSICS_JCC_PADDING AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|i.86")
+  include(CheckCCompilerFlag)
+  if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    set(DDNET_PHYSICS_JCC_FLAG -mbranches-within-32B-boundaries)
+  else()
+    set(DDNET_PHYSICS_JCC_FLAG -Wa,-mbranches-within-32B-boundaries)
+  endif()
+  check_c_compiler_flag(${DDNET_PHYSICS_JCC_FLAG} DDNET_PHYSICS_HAVE_JCC_FLAG)
+  if(DDNET_PHYSICS_HAVE_JCC_FLAG)
+    target_compile_options(ddnet_physics PRIVATE ${DDNET_PHYSICS_JCC_FLAG})
+  endif()
 endif()
-
-# ddnet_map_loader fetches zlib when no system package is available. Only the
-# library is needed here; zlib's example programs inherit this project's strict
-# C99 mode and can fail independently of the library.
-set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "Build zlib example programs")
-
-# Add subdirectory for ddnet_map_loader
-add_subdirectory(libs/ddnet_map_loader)
-target_link_libraries(ddnet_physics PUBLIC ddnet_map_loader)
-if(UNIX AND NOT APPLE)
-  target_link_libraries(ddnet_physics PRIVATE m)
-endif()
-
-if(BENCHMARKS)
-    add_subdirectory(benchmarks)
-endif()
-if(EXAMPLES)
-    add_subdirectory(examples)
-endif()
-
-# install
 target_include_directories(ddnet_physics PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-    $<INSTALL_INTERFACE:include>
-)
-install(TARGETS ddnet_physics
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
-    RUNTIME DESTINATION bin
-)
-install(FILES
-    include/ddnet_physics/collision.h
-    include/ddnet_physics/config.h
-    include/ddnet_physics/gamecore.h
-    include/ddnet_physics/tuning.h
-    include/ddnet_physics/vmath.h
-    DESTINATION include/ddnet_physics
-)
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_compile_definitions(ddnet_physics PUBLIC
+  ${DDNET_PHYSICS_BACKEND_DEFINITION} ${DDNET_PHYSICS_EVENTS_DEFINITION} DDNET_MAX_CLIENTS=${DDNET_MAX_CLIENTS})
+target_link_libraries(ddnet_physics PUBLIC ddnet_map_loader PRIVATE ddnet_physics_options m)
+set_target_properties(ddnet_physics PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 
-# uninstall
-if(NOT TARGET uninstall)
-    configure_file(cmake/cmake_uninstall.cmake.in cmake_uninstall.cmake IMMEDIATE @ONLY)
-    add_custom_target(uninstall COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake")
+# Profile guided optimization. It changes how the code is laid out and what is
+# inlined, not what is computed: the results stay the same. With GCC and the
+# profile of tests/pgo.sh (the run of bench --tas and random inputs on the maps
+# given) the optimized backend is about 4 % faster on the run and 9 % with
+# random inputs; Clang, with a profile or without, was slower than GCC.
+set(DDNET_PHYSICS_PGO off CACHE STRING
+    "off, generate (a build that records a profile when it runs) or use (optimize with a recorded profile)")
+set_property(CACHE DDNET_PHYSICS_PGO PROPERTY STRINGS off generate use)
+set(DDNET_PHYSICS_PGO_PROFILE "${CMAKE_BINARY_DIR}/ddnet_physics.profdata" CACHE PATH
+    "The profile: a file merged by llvm-profdata for Clang, a directory for GCC")
+if(DDNET_PHYSICS_PGO STREQUAL "generate")
+  if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    target_compile_options(ddnet_physics PRIVATE -fprofile-instr-generate)
+    target_link_options(ddnet_physics PUBLIC -fprofile-instr-generate)
+  else()
+    target_compile_options(ddnet_physics PRIVATE -fprofile-generate=${DDNET_PHYSICS_PGO_PROFILE})
+    target_link_options(ddnet_physics PUBLIC -fprofile-generate=${DDNET_PHYSICS_PGO_PROFILE})
+  endif()
+elseif(DDNET_PHYSICS_PGO STREQUAL "use")
+  if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    target_compile_options(ddnet_physics PRIVATE -fprofile-instr-use=${DDNET_PHYSICS_PGO_PROFILE})
+  else()
+    target_compile_options(ddnet_physics PRIVATE
+      -fprofile-use=${DDNET_PHYSICS_PGO_PROFILE} -fprofile-correction -Wno-missing-profile)
+  endif()
+elseif(NOT DDNET_PHYSICS_PGO STREQUAL "off")
+  message(FATAL_ERROR "ddnet_physics: unknown DDNET_PHYSICS_PGO '${DDNET_PHYSICS_PGO}'")
+endif()
+
+if(DDNET_PHYSICS_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
+
+if(DDNET_PHYSICS_BUILD_EXAMPLES)
+  add_subdirectory(examples)
 endif()

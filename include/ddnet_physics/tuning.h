@@ -1,57 +1,36 @@
-#define GAME_TICK_SPEED 50
+#ifndef DDNET_PHYSICS_TUNING_H
+#define DDNET_PHYSICS_TUNING_H
 
-#ifndef MACRO_TUNING_PARAM
-#define MACRO_TUNING_PARAM(Name, Value) ;
+#include <stdbool.h>
+
+#define DDNET_TICK_SPEED 50
+
+/* A tuning value is stored like DDNet stores and sends it: as an integer in
+ * hundredths. Physics code reads it through ddnet_tune(), every time, exactly
+ * like the implicit float conversion of DDNet's CTuneParam. */
+typedef int ddnet_tune_param_t;
+
+static inline float ddnet_tune(ddnet_tune_param_t value) { return value / 100.0f; }
+
+typedef struct ddnet_tuning_t {
+#define DDNET_TUNING_PARAM(name, default_value) ddnet_tune_param_t name;
+#include "tuning_params.h"
+#undef DDNET_TUNING_PARAM
+} ddnet_tuning_t;
+
+enum { DDNET_NUM_TUNING_PARAMS = sizeof(ddnet_tuning_t) / sizeof(ddnet_tune_param_t) };
+
+/* DDNet's built-in defaults (CTuningParams::DEFAULT). Note that a DDNet server
+ * does not run with these: see ddnet_tuning_init_ddrace(). */
+void ddnet_tuning_init_default(ddnet_tuning_t *tuning);
+/* The defaults a DDNet server starts every map with. */
+void ddnet_tuning_init_ddrace(ddnet_tuning_t *tuning);
+
+const char *ddnet_tuning_name(int index);
+bool ddnet_tuning_set(ddnet_tuning_t *tuning, int index, float value);
+bool ddnet_tuning_get(const ddnet_tuning_t *tuning, int index, float *value);
+/* By name, case insensitive, like the "tune" console command. */
+bool ddnet_tuning_set_by_name(ddnet_tuning_t *tuning, const char *name, float value);
+bool ddnet_tuning_get_by_name(const ddnet_tuning_t *tuning, const char *name, float *value);
+
 #endif
-
-// physics tuning
-MACRO_TUNING_PARAM(GroundControlSpeed, 10.0f)
-MACRO_TUNING_PARAM(GroundControlAccel, 100.0f / GAME_TICK_SPEED)
-MACRO_TUNING_PARAM(GroundFriction, 0.5f)
-MACRO_TUNING_PARAM(GroundJumpImpulse, 13.2f)
-MACRO_TUNING_PARAM(AirJumpImpulse, 12.0f)
-MACRO_TUNING_PARAM(AirControlSpeed, 250.0f / GAME_TICK_SPEED)
-MACRO_TUNING_PARAM(AirControlAccel, 1.5f)
-MACRO_TUNING_PARAM(AirFriction, 0.95f)
-MACRO_TUNING_PARAM(HookLength, 380.0f)
-MACRO_TUNING_PARAM(HookFireSpeed, 80.0f)
-MACRO_TUNING_PARAM(HookDragAccel, 3.0f)
-MACRO_TUNING_PARAM(HookDragSpeed, 15.0f)
-MACRO_TUNING_PARAM(Gravity, 0.5f)
-MACRO_TUNING_PARAM(VelrampStart, 550.0f)
-MACRO_TUNING_PARAM(VelrampRange, 2000.0f)
-MACRO_TUNING_PARAM(VelrampCurvature, 1.4f)
-MACRO_TUNING_PARAM(VelrampValue, 0x1.60d112p-13) // precomputed logf(Curvature) / Range
-MACRO_TUNING_PARAM(GunCurvature, 1.25f)
-MACRO_TUNING_PARAM(GunSpeed, 2200.0f)
-MACRO_TUNING_PARAM(GunLifetime, 2.0f)
-MACRO_TUNING_PARAM(ShotgunCurvature, 1.25f)
-MACRO_TUNING_PARAM(ShotgunSpeed, 2750.0f)
-MACRO_TUNING_PARAM(ShotgunSpeeddiff, 0.8f)
-MACRO_TUNING_PARAM(ShotgunLifetime, 0.20f)
-MACRO_TUNING_PARAM(GrenadeCurvature, 7.0f)
-MACRO_TUNING_PARAM(GrenadeSpeed, 1000.0f)
-MACRO_TUNING_PARAM(GrenadeLifetime, 2.0f)
-MACRO_TUNING_PARAM(LaserReach, 800.0f)
-MACRO_TUNING_PARAM(LaserBounceDelay, 150)
-MACRO_TUNING_PARAM(LaserBounceNum, 1000)
-MACRO_TUNING_PARAM(LaserBounceCost, 0)
-MACRO_TUNING_PARAM(LaserDamage, 5)
-MACRO_TUNING_PARAM(PlayerCollision, 1)
-MACRO_TUNING_PARAM(PlayerHooking, 1)
-MACRO_TUNING_PARAM(JetpackStrength, 400.0f)
-MACRO_TUNING_PARAM(ShotgunStrength, 10.0f)
-MACRO_TUNING_PARAM(ExplosionStrength, 6.0f)
-MACRO_TUNING_PARAM(HammerStrength, 1.0f)
-MACRO_TUNING_PARAM(HookDuration, 1.25f)
-MACRO_TUNING_PARAM(HammerFireDelay, 125)
-MACRO_TUNING_PARAM(GunFireDelay, 125)
-MACRO_TUNING_PARAM(ShotgunFireDelay, 500)
-MACRO_TUNING_PARAM(GrenadeFireDelay, 500)
-MACRO_TUNING_PARAM(LaserFireDelay, 800)
-MACRO_TUNING_PARAM(NinjaFireDelay, 800)
-MACRO_TUNING_PARAM(HammerHitFireDelay, 320)
-
-// These are garbage we don't want them
-// MACRO_TUNING_PARAM(GroundElasticityX, 0)
-// MACRO_TUNING_PARAM(GroundElasticityY, 0)

@@ -1,6 +1,0 @@
-cmake_minimum_required(VERSION 3.16)
-project(simple_tick)
-file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/maps/tinycave.map DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/../../maps)
-add_executable(${PROJECT_NAME} simple_tick.c)
-target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(${PROJECT_NAME} PRIVATE ddnet_physics ddnet_map_loader)

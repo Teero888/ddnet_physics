@@ -1,196 +1,55 @@
-#ifndef LIB_COLLISION_H
-#define LIB_COLLISION_H
+/* Collisions: the static part of a map.
+ *
+ * The functions are the same for both implementations, the structure belongs
+ * to the implementation the library was built as, see backend.h. */
+#ifndef DDNET_PHYSICS_COLLISION_H
+#define DDNET_PHYSICS_COLLISION_H
 
-#ifndef DDNET_PHYSICS_API
-#if defined(_WIN32)
-#if defined(FRAMETEE_EXPORTS)
-#define DDNET_PHYSICS_API __declspec(dllexport)
-#else
-#define DDNET_PHYSICS_API __declspec(dllimport)
-#endif
-#else
-#define DDNET_PHYSICS_API
-#endif
-#endif
-
-#if defined(_MSC_VER) && !defined(__clang__)
-#ifndef __restrict__
-#define __restrict__ __restrict
-#endif
-#define __attribute__(x)
-#define __builtin_unreachable() __assume(0)
-#endif
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-#include "stdbool.h"
+#include "backend.h"
 #include "vmath.h"
-#include <ddnet_map_loader.h>
-#include <stdint.h>
 
-struct WorldCore;
+#include <stdbool.h>
+#include <stddef.h>
 
+struct map_data_t; /* ddnet_map_loader.h */
+
+/* Result bits of ddnet_collision_get_move_restrictions(). */
 enum {
-  CANTMOVE_LEFT = 1 << 0,
-  CANTMOVE_RIGHT = 1 << 1,
-  CANTMOVE_UP = 1 << 2,
-  CANTMOVE_DOWN = 1 << 3,
+  DDNET_CANTMOVE_LEFT = 1 << 0,
+  DDNET_CANTMOVE_RIGHT = 1 << 1,
+  DDNET_CANTMOVE_UP = 1 << 2,
+  DDNET_CANTMOVE_DOWN = 1 << 3,
 };
 
-#define DEATH 9
-#define PICKUPSIZE 14
-#define PHYSICALSIZE 28.f
-#define HALFPHYSICALSIZE 14
-#define PHYSICALSIZEVEC vec2_init(28.f, 28.f)
-#define MAP_EXPAND 200
-#define MAP_EXPAND32 (200 * 32)
+/* Highest teleporter / tune zone number a tile can hold. */
+enum { DDNET_MAX_TELE_NUMBER = 255, DDNET_NUM_TUNE_ZONES = 256 };
 
-enum {
-  INFO_ISSOLID = 1 << 0,
-  INFO_TILENEXT = 1 << 1,
-  INFO_PICKUPNEXT = 1 << 2,
-  INFO_CANGROUND = 1 << 3,
-  INFO_CANHITKILL = 1 << 4,
-  INFO_CANHITSOLID = 1 << 5,
-  INFO_CANHITSTOPPER = 1 << 6,
-  INFO_ISSPEEDUP = 1 << 7,
-};
-
-typedef struct TuningParams {
-#define MACRO_TUNING_PARAM(Name, Value) float m_##Name;
-#include <ddnet_physics/tuning.h>
-#undef MACRO_TUNING_PARAM
-  // Derived, not a tunable: the default max speed a TILE_SPEED_BOOST tile with
-  // MaxSpeed == 0 falls back to. It depends only on the velramp tunings, so it is
-  // folded once instead of calling logf() on every boost tile hit.
-  float m_SpeedupDefaultMaxSpeed;
-} STuningParams;
-
-// Recomputes the derived members above. Call after any change to the tunables.
-DDNET_PHYSICS_API void tuning_update_derived(STuningParams *pTuning);
-
-enum {
-  POWERUP_HEALTH,
-  POWERUP_ARMOR,
-  POWERUP_WEAPON,
-  POWERUP_NINJA,
-  POWERUP_ARMOR_SHOTGUN,
-  POWERUP_ARMOR_GRENADE,
-  POWERUP_ARMOR_NINJA,
-  POWERUP_ARMOR_LASER,
-  NUM_POWERUPS
-};
-
-typedef struct Pickup {
-  int8_t m_Type;
-  uint8_t m_Number;
-  uint8_t m_Subtype;
-} SPickup;
-
-enum {
-  NUM_TUNE_ZONES = 256,
-  DISTANCE_FIELD_RESOLUTION = 32,
-};
-
-typedef struct Door {
-  mvec2 m_Pos;
-  mvec2 m_To;
-  int m_Number;
-} SDoor;
-
-typedef struct Collision {
-  map_data_t m_MapData;
-  uint32_t *m_pWidthLookup;
-  uint64_t *m_pBroadSolidBitField;
-  uint64_t *m_pBroadIndicesBitField;
-  uint8_t *m_pTileInfos;
-  SPickup *m_pPickups;
-  SPickup *m_pFrontPickups;
-  uint8_t (*m_pMoveRestrictions)[5];
-  uint8_t *m_pTileBroadCheck;
-  uint8_t *m_pSolidTeleDistanceField;
-  uint64_t *m_pBroadTeleInBitField;
-  mvec2 *m_apTeleOuts[256];
-  mvec2 *m_apTeleCheckOuts[256];
-  mvec2 *m_pSpawnPoints;
-  // purely for graphics, the doors are just stoppers but we need to track them to render them
-  SDoor *m_pDoors;
-
-  int m_NumDoors;
-  int m_NumSpawnPoints;
-  int m_aNumTeleOuts[256];
-  int m_aNumTeleCheckOuts[256];
-  STuningParams m_aTuningList[NUM_TUNE_ZONES];
-
-  int m_HighestSwitchNumber;
-
-  bool m_MoveRestrictionsFound;
-  bool m_aFastcapFlagPresent[2];
-  mvec2 m_aFastcapFlagPositions[2];
-  // (width * 32 - (HALFPHYSICALSIZE + 2), height * 32 - (HALFPHYSICALSIZE + 2)),
-  // the upper bound cc_move tests every tick. Derived from the map dimensions,
-  // so it is folded once at init instead of being rebuilt from two int loads,
-  // two converts and two multiplies on every character move.
-  mvec2 m_MapMaxPos;
-  // (width * 32 - 1, height * 32 - 1): the clip box the hook and laser segments
-  // are cut against. Folded at init so the common in-bounds test is one load.
-  mvec2 m_MapClipMax;
-} SCollision;
-
-// Takes ownership of pMap
-DDNET_PHYSICS_API bool init_collision(SCollision *__restrict__ pCollision, map_data_t *__restrict__ pMap);
-DDNET_PHYSICS_API bool init_collision_with_no_weapons(SCollision *__restrict__ pCollision, map_data_t *__restrict__ pMap, bool NoWeapons);
-DDNET_PHYSICS_API void free_collision(SCollision *pCollision);
-DDNET_PHYSICS_API int get_pure_map_index(SCollision *pCollision, mvec2 Pos);
-DDNET_PHYSICS_API unsigned char move_restrictions(unsigned char Direction, unsigned char Tile, unsigned char Flags);
-DDNET_PHYSICS_API unsigned char get_tile_index(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API unsigned char get_front_tile_index(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API unsigned char get_tile_flags(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API unsigned char get_front_tile_flags(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API unsigned char get_switch_number(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API unsigned char get_switch_type(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API unsigned char get_switch_delay(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API unsigned char is_teleport(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API unsigned char is_teleport_hook(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API unsigned char is_teleport_weapon(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API unsigned char is_evil_teleport(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API unsigned char is_check_teleport(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API unsigned char is_check_evil_teleport(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API unsigned char is_tele_checkpoint(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API unsigned char get_collision_at(SCollision *pCollision, mvec2 Pos);
-DDNET_PHYSICS_API unsigned char get_front_collision_at(SCollision *pCollision, mvec2 Pos);
-DDNET_PHYSICS_API unsigned char get_move_restrictions(struct WorldCore *pWorld, mvec2 Pos, int Idx);
-DDNET_PHYSICS_API int get_map_index(SCollision *pCollision, mvec2 Pos);
-DDNET_PHYSICS_API bool check_point(SCollision *pCollision, mvec2 Pos);
-// Only used to construct doors
-DDNET_PHYSICS_API bool intersect_no_laser(SCollision *__restrict__ pCollision, mvec2 Pos0, mvec2 Pos1, mvec2 *__restrict__ pOutCollision,
-                                          mvec2 *__restrict__ pOutBeforeCollision);
-DDNET_PHYSICS_API void set_door_collision_at(SCollision *pCollision, float x, float y, unsigned char Type, unsigned char Flags, int Number);
-DDNET_PHYSICS_API bool is_hook_blocker(SCollision *pCollision, int Index, mvec2 Pos0, mvec2 Pos1);
-DDNET_PHYSICS_API unsigned char intersect_line_tele_hook(SCollision *__restrict__ pCollision, mvec2 Pos0, mvec2 Pos1,
-                                                         mvec2 *__restrict__ pOutCollision, unsigned char *__restrict__ pTeleNr);
-DDNET_PHYSICS_API unsigned char intersect_line_tele_weapon(SCollision *__restrict__ pCollision, mvec2 Pos0, mvec2 Pos1,
-                                                           mvec2 *__restrict__ pOutCollision, unsigned char *__restrict__ pTeleNr);
-
-DDNET_PHYSICS_API bool test_box(SCollision *pCollision, mvec2 Pos, mvec2 Size);
-DDNET_PHYSICS_API unsigned char is_tune(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API bool is_speedup(SCollision *pCollision, int Index);
-DDNET_PHYSICS_API void get_speedup(SCollision *__restrict__ pCollision, int Index, mvec2 *__restrict__ pDir, int *__restrict__ pForce,
-                                   int *__restrict__ pMaxSpeed, int *__restrict__ pType);
-DDNET_PHYSICS_API bool intersect_line(SCollision *__restrict__ pCollision, mvec2 Pos0, mvec2 Pos1, mvec2 *__restrict__ pOutCollision,
-                                      mvec2 *__restrict__ pOutBeforeCollision);
-DDNET_PHYSICS_API void move_box(const SCollision *__restrict__ pCollision, mvec2 Pos, mvec2 Vel, mvec2 *__restrict__ pOutPos,
-                                mvec2 *__restrict__ pOutVel, bool *__restrict__ pGrounded);
-DDNET_PHYSICS_API bool get_nearest_air_pos_player(SCollision *pCollision, mvec2 PlayerPos, mvec2 *pOutPos);
-DDNET_PHYSICS_API bool get_nearest_air_pos(SCollision *pCollision, mvec2 Pos, mvec2 PrevPos, mvec2 *pOutPos);
-DDNET_PHYSICS_API int get_index(SCollision *pCollision, mvec2 PrevPos, mvec2 Pos);
-DDNET_PHYSICS_API unsigned char mover_speed(SCollision *pCollision, int x, int y, mvec2 *pSpeed);
-DDNET_PHYSICS_API int entity(SCollision *pCollision, int x, int y, int Layer);
-DDNET_PHYSICS_API bool test_box_character(const SCollision *__restrict__ pCollision, int x, int y);
-#ifdef __cplusplus
-}
+#if defined(DDNET_PHYSICS_BACKEND_REFERENCE)
+#include "reference/collision.h"
+#elif defined(DDNET_PHYSICS_BACKEND_OPTIMIZED)
+#include "optimized/collision.h"
 #endif
 
-#endif // LIB_COLLISION_H
+/* Copies everything it needs out of the map: the map can be freed afterwards.
+ * Returns false if the map has no game layer or memory ran out. */
+bool ddnet_collision_init(ddnet_collision_t *collision, const struct map_data_t *map);
+void ddnet_collision_free(ddnet_collision_t *collision);
+
+/* The raw collision queries of DDNet's CCollision. Positions are in world
+ * units, 32 units per tile. */
+int ddnet_collision_get_tile(const ddnet_collision_t *collision, int x, int y);
+int ddnet_collision_get_front_tile(const ddnet_collision_t *collision, int x, int y);
+bool ddnet_collision_check_point(const ddnet_collision_t *collision, float x, float y);
+bool ddnet_collision_test_box(const ddnet_collision_t *collision, ddnet_vec2_t pos, ddnet_vec2_t size);
+bool ddnet_collision_is_on_ground(const ddnet_collision_t *collision, ddnet_vec2_t pos, float size);
+int ddnet_collision_intersect_line(const ddnet_collision_t *collision, ddnet_vec2_t pos0, ddnet_vec2_t pos1,
+                                   ddnet_vec2_t *out_collision, ddnet_vec2_t *out_before_collision);
+void ddnet_collision_move_point(const ddnet_collision_t *collision, ddnet_vec2_t *inout_pos,
+                                ddnet_vec2_t *inout_vel, float elasticity, int *bounces);
+void ddnet_collision_move_box(const ddnet_collision_t *collision, ddnet_vec2_t *inout_pos,
+                              ddnet_vec2_t *inout_vel, ddnet_vec2_t size, ddnet_vec2_t elasticity,
+                              bool *grounded);
+/* Tile index of a position, without any filtering. */
+int ddnet_collision_get_pure_map_index(const ddnet_collision_t *collision, float x, float y);
+
+#endif
