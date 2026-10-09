@@ -281,6 +281,7 @@ static void character_handle_ninja(world_t *w, character_t *chr) {
         create_sound(w, other->pos, DDNET_SOUND_NINJA_HIT, character_id(chr));
         chr->hit_objects[chr->num_objects_hit++] = client_id;
 
+        other->hit_num += NINJA_DAMAGE;
         character_take_damage(w, other, v2(0, -10.0f), NINJA_DAMAGE, character_id(chr), WEAPON_NINJA);
       }
     }
@@ -454,6 +455,7 @@ static void character_fire_weapon(world_t *w, character_t *chr) {
       vec2 temp = vadd(target->core.vel, vscale(vnormalize(vadd(dir, v2(0.f, -1.1f))), 10.0f));
       temp = clamp_vel(target->move_restrictions, temp);
       temp = vsub(temp, target->core.vel);
+      target->hit_num += HAMMER_DAMAGE;
       character_take_damage(w, target, vscale(vadd(v2(0.f, -1.0f), temp), strength), HAMMER_DAMAGE,
                             character_id(chr), chr->core.active_weapon);
       character_unfreeze(w, target);

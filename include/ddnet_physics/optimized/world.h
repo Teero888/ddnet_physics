@@ -132,6 +132,11 @@ typedef struct ddnet_character_t {
   int queued_weapon;
   int reload_timer;
   int attack_tick;
+  /* How hard the tee was hit lately (not DDNet's: for searches). A tick takes
+   * one off first, down to 0, and every hit of the tick then adds to it: an
+   * explosion its damage, a shotgun or laser 2, a hammer 3, a ninja 9. Read
+   * after a tick, it has all of that tick's hits. */
+  int hit_num;
   int move_restrictions;
 
   int num_inputs; /* (the input is core.input) */

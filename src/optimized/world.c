@@ -845,6 +845,7 @@ void create_explosion(world_t *w, vec2 pos, int owner, int weapon, bool no_damag
         exploded[player_team >> 6] |= (uint64_t)1 << (player_team & 63);
       }
 
+      chr->hit_num += (int)dmg;
       character_take_damage(w, chr, vscale(vscale(force_dir, dmg), 2), (int)dmg, owner, weapon);
     }
   }
@@ -1547,6 +1548,11 @@ static inline bool world_tick_lone(world_t *w) {
 static void world_tick_any(world_t *w);
 
 DDNET_HOT void ddnet_world_tick(ddnet_world_t *w) {
+  /* (before anything of the tick: its hits add to what is left, see ddnet_character_t::hit_num) */
+  for (int n = 0; n < w->num_players; n++) {
+    character_t *chr = &w->characters[w->player_ids[n]];
+    chr->hit_num -= chr->hit_num > 0;
+  }
   if (w->num_players == 1 && world_tick_lone(w))
     return;
   world_tick_any(w);

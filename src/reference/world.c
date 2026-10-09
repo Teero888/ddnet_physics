@@ -357,6 +357,7 @@ void create_explosion(world_t *w, vec2 pos, int owner, int weapon, bool no_damag
         team_mask[player_team] = false;
       }
 
+      chr->hit_num += (int)dmg;
       character_take_damage(w, chr, vscale(vscale(force_dir, dmg), 2), (int)dmg, owner, weapon);
     }
   }
@@ -617,6 +618,13 @@ void ddnet_world_tuning_changed(ddnet_world_t *w) { (void)w; }
 
 /* One iteration of the tick loop in CServer::Run. */
 void ddnet_world_tick(ddnet_world_t *w) {
+  /* Before anything of the tick, the hits of the tees wear off by one: the
+   * hits of the tick add to what is left (ddnet_character_t::hit_num). */
+  for (int c = 0; c < MAX_CLIENTS; c++) {
+    if (w->players[c].active && w->characters[c].hit_num > 0)
+      w->characters[c].hit_num--;
+  }
+
   /* Chat commands arrive between two ticks. */
   for (int c = 0; c < MAX_CLIENTS; c++) {
     if (w->players[c].active && (w->characters[c].spec != 0) != (w->players[c].paused != DDNET_PAUSE_NONE))

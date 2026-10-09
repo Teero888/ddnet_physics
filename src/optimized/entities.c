@@ -1353,6 +1353,7 @@ static bool laser_hit_character(world_t *w, entity_t *ent, vec2 from, vec2 to) {
   } else if (laser->type == WEAPON_LASER) {
     character_unfreeze(w, hit);
   }
+  hit->hit_num += 2;
   character_take_damage(w, hit, v2(0, 0), 0, laser->owner, laser->type);
   return true;
 }
