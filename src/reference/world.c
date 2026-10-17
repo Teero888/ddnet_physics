@@ -619,10 +619,13 @@ void ddnet_world_tuning_changed(ddnet_world_t *w) { (void)w; }
 /* One iteration of the tick loop in CServer::Run. */
 void ddnet_world_tick(ddnet_world_t *w) {
   /* Before anything of the tick, the hits of the tees wear off by one: the
-   * hits of the tick add to what is left (ddnet_character_t::hit_num). */
+   * hits of the tick add to what is left (ddnet_character_t::hit_num). And
+   * what their hooks gave comes from the tick alone
+   * (ddnet_character_core_t::hook_accel). */
   for (int c = 0; c < MAX_CLIENTS; c++) {
     if (w->players[c].active && w->characters[c].hit_num > 0)
       w->characters[c].hit_num--;
+    w->characters[c].core.hook_accel = (vec2){0, 0};
   }
 
   /* Chat commands arrive between two ticks. */

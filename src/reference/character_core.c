@@ -304,8 +304,10 @@ void core_tick(world_t *w, core_t *core, bool use_input, bool do_deferred_tick) 
 
       /* check if we are under the legal limit for the hook */
       const float new_vel_length = vlength(new_vel);
-      if (new_vel_length < ddnet_tune(tuning->hook_drag_speed) || new_vel_length < vlength(core->vel))
+      if (new_vel_length < ddnet_tune(tuning->hook_drag_speed) || new_vel_length < vlength(core->vel)) {
         core->vel = new_vel; /* no problem. apply */
+        core->hook_accel = hook_vel;
+      }
     }
 
     /* release hook (max default hook time is 1.25 s) */
@@ -367,12 +369,14 @@ void core_tick_deferred(world_t *w, core_t *core) {
 
           vec2 temp;
           /* add force to the hooked player */
-          temp.x = saturated_add(-drag_speed, drag_speed, char_core->vel.x, hook_accel * dir.x * 1.5f);
-          temp.y = saturated_add(-drag_speed, drag_speed, char_core->vel.y, hook_accel * dir.y * 1.5f);
+          char_core->hook_accel = (vec2){hook_accel * dir.x * 1.5f, hook_accel * dir.y * 1.5f};
+          temp.x = saturated_add(-drag_speed, drag_speed, char_core->vel.x, char_core->hook_accel.x);
+          temp.y = saturated_add(-drag_speed, drag_speed, char_core->vel.y, char_core->hook_accel.y);
           char_core->vel = clamp_vel(char_core->move_restrictions, temp);
           /* add a little bit force to the guy who has the grip */
-          temp.x = saturated_add(-drag_speed, drag_speed, core->vel.x, -hook_accel * dir.x * 0.25f);
-          temp.y = saturated_add(-drag_speed, drag_speed, core->vel.y, -hook_accel * dir.y * 0.25f);
+          core->hook_accel = (vec2){-hook_accel * dir.x * 0.25f, -hook_accel * dir.y * 0.25f};
+          temp.x = saturated_add(-drag_speed, drag_speed, core->vel.x, core->hook_accel.x);
+          temp.y = saturated_add(-drag_speed, drag_speed, core->vel.y, core->hook_accel.y);
           core->vel = clamp_vel(core->move_restrictions, temp);
         }
       }

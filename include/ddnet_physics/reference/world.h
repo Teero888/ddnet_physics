@@ -28,6 +28,8 @@ typedef struct ddnet_ninja_t {
 typedef struct ddnet_character_core_t {
   ddnet_vec2_t pos;
   ddnet_vec2_t vel;
+  /* The acceleration a hook gave the tee in the last tick */
+  ddnet_vec2_t hook_accel;
 
   ddnet_vec2_t hook_pos;
   ddnet_vec2_t hook_dir;

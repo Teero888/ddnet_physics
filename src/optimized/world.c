@@ -1548,10 +1548,12 @@ static inline bool world_tick_lone(world_t *w) {
 static void world_tick_any(world_t *w);
 
 DDNET_HOT void ddnet_world_tick(ddnet_world_t *w) {
-  /* (before anything of the tick: its hits add to what is left, see ddnet_character_t::hit_num) */
+  /* (before anything of the tick: its hits add to what is left, see ddnet_character_t::hit_num, and
+   * its hooks to nothing, see ddnet_character_core_t::hook_accel) */
   for (int n = 0; n < w->num_players; n++) {
     character_t *chr = &w->characters[w->player_ids[n]];
     chr->hit_num -= chr->hit_num > 0;
+    chr->core.hook_accel = (vec2){0, 0};
   }
   if (w->num_players == 1 && world_tick_lone(w))
     return;
