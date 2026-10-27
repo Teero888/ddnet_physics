@@ -160,6 +160,25 @@ ddnet_character_t *ddnet_world_character(ddnet_world_t *world);
  * show a recorded state). Call this after writing to the tee directly,
  * before the next tick. Does nothing in the reference backend. */
 void ddnet_character_changed(ddnet_world_t *world);
+#if defined(DDNET_PHYSICS_BACKEND_UNIQUE_OPTIMIZED)
+/* The event build of the optimized backend (DDNET_PHYSICS_EVENTS, see the
+ * one of DDNet above): the same functions, which call the callbacks of the
+ * world, on the same structures. */
+bool ddnet_ev_world_init(ddnet_world_t *world, const ddnet_collision_t *collision, const ddnet_config_t *config);
+void ddnet_ev_world_free(ddnet_world_t *world);
+bool ddnet_ev_world_copy(ddnet_world_t *dst, const ddnet_world_t *src);
+void ddnet_ev_world_sync(ddnet_world_t *world);
+void ddnet_ev_world_changed(ddnet_world_t *world);
+ddnet_tuning_t *ddnet_ev_world_tuning_edit(ddnet_world_t *world);
+void ddnet_ev_world_tuning_changed(ddnet_world_t *world);
+void ddnet_ev_world_tick(ddnet_world_t *world);
+bool ddnet_ev_player_spawn(ddnet_world_t *world);
+bool ddnet_ev_player_kill(ddnet_world_t *world);
+bool ddnet_ev_player_set_fastcap_side(ddnet_world_t *world, int side);
+int ddnet_ev_character_angle(const ddnet_character_t *chr);
+ddnet_character_t *ddnet_ev_world_character(ddnet_world_t *world);
+void ddnet_ev_character_changed(ddnet_world_t *world);
+#endif
 
 #endif
 

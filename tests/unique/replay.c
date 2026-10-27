@@ -12,8 +12,8 @@
  * With REPLAY_EVENTS=<file> in the environment the effects and sounds
  * (events.h) are written there, per event: the player, the tick, the kind (0
  * sound, 1 particle, 2 damage indicator), the sound, particle or amount, and
- * the bits of x, y and the angle (the reference backend only: the optimized
- * one has no events). */
+ * the bits of x, y and the angle (the reference backend, and the optimized one
+ * with its event build, the functions ddnet_ev_*). */
 #include "oracle/record.h"
 
 #include <ddnet_map_loader.h>
@@ -38,7 +38,16 @@ static int events_tick;
 typedef struct event_user_t {
   int player;
 } event_user_t;
-#if defined(DDNET_PHYSICS_BACKEND_UNIQUE_REFERENCE)
+#if defined(DDNET_PHYSICS_BACKEND_UNIQUE_REFERENCE) || defined(DDNET_PHYSICS_HAS_EVENTS)
+#define REPLAY_HAS_EVENTS 1
+#endif
+/* A function of the backend, of the event build if events are written */
+#if defined(DDNET_PHYSICS_BACKEND_UNIQUE_OPTIMIZED) && defined(DDNET_PHYSICS_HAS_EVENTS)
+#define EV(name) (events_file ? ddnet_ev_##name : ddnet_##name)
+#else
+#define EV(name) ddnet_##name
+#endif
+#ifdef REPLAY_HAS_EVENTS
 static void put_event(void *user_data, int kind, int id, ddnet_vec2_t pos, float angle) {
   int32_t rec[7] = {((event_user_t *)user_data)->player, events_tick, kind, id, 0, 0, 0};
   memcpy(&rec[4], &pos.x, 4);
@@ -263,7 +272,7 @@ int main(int argc, char **argv) {
     if (!ddnet_world_init(&worlds[i], &collision, &config))
       return 2;
     users[i].player = i;
-#if defined(DDNET_PHYSICS_BACKEND_UNIQUE_REFERENCE)
+#ifdef REPLAY_HAS_EVENTS
     if (events_file) {
       worlds[i].user_data = &users[i];
       worlds[i].sound = on_sound;
@@ -281,9 +290,9 @@ int main(int argc, char **argv) {
       ddnet_world_t *world = &worlds[i];
       const unique_step_t *step = &steps[(size_t)tick * num_players + i];
       if (step->action == UNIQUE_ACTION_KILL) {
-        ddnet_player_kill(world);
+        EV(player_kill)(world);
       } else if (step->action == UNIQUE_ACTION_SIDE) {
-        ddnet_player_set_fastcap_side(world, step->arg);
+        EV(player_set_fastcap_side)(world, step->arg);
       } else if (step->action == UNIQUE_ACTION_TELEPORT) {
         ddnet_character_t *chr = ddnet_world_character(world);
         if (chr) {
@@ -307,7 +316,7 @@ int main(int argc, char **argv) {
       input->prev_weapon = step->input[9];
     }
     for (int i = 0; i < num_players; i++)
-      ddnet_world_tick(&worlds[i]);
+      EV(world_tick)(&worlds[i]);
 
     put(worlds[0].tick);
     for (int i = 0; i < num_players; i++) {
@@ -318,7 +327,7 @@ int main(int argc, char **argv) {
         ddnet_world_sync(&worlds[i]);
       } else {
         ddnet_world_copy(&snapshot, &worlds[i]);
-#if defined(DDNET_PHYSICS_BACKEND_UNIQUE_REFERENCE)
+#ifdef REPLAY_HAS_EVENTS
         snapshot.sound = NULL;
         snapshot.particle = NULL;
         snapshot.damage_indicator = NULL;

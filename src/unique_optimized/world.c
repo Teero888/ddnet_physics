@@ -220,6 +220,8 @@ static void character_spawn(world_t *w, vec2 pos) {
 static void player_kill_character(world_t *w) {
   if (w->player.has_character) {
     character_t *chr = &w->character;
+    EMIT_SOUND(w, chr->pos, DDNET_SOUND_PLAYER_DIE);
+    EMIT_PARTICLE(w, chr->pos, DDNET_PARTICLE_PLAYER_DEATH);
     w->player.previous_die_tick = w->player.die_tick;
     w->player.die_tick = server_tick(w);
     chr->alive = false;
@@ -235,6 +237,7 @@ static void player_try_respawn(world_t *w) {
   w->player.spawning = false;
   w->player.view_pos = spawn_pos;
   character_spawn(w, spawn_pos);
+  EMIT_PARTICLE(w, spawn_pos, DDNET_PARTICLE_PLAYER_SPAWN);
 }
 
 /* CPlayer::Tick */

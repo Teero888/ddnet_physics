@@ -7,7 +7,9 @@
  * compiled once per game mode (race, race with sv_health_and_ammo, fastcap,
  * fastcap without weapons), each without what its mode does not have.
  *
- * It has no events (events.h): the reference backend has them. */
+ * Like the optimized DDNet backend, it is built twice: once without events and
+ * once with them (unity_events.c, the functions ddnet_ev_*), which calls the
+ * callbacks of events.h where the reference backend does. */
 #ifndef DDNET_PHYSICS_UNIQUE_OPTIMIZED_INTERNAL_H
 #define DDNET_PHYSICS_UNIQUE_OPTIMIZED_INTERNAL_H
 
@@ -75,6 +77,34 @@ typedef struct game_mode_t {
   bool fastcap; /* the flags, the red and blue spawns */
   bool weapons; /* grenades can exist */
 } game_mode_t;
+
+/* The events of CGameContext (CreateSound, CreateDeath, ...) as the callbacks
+ * of the world (events.h), in the event build (DDNET_PHYSICS_EVENTS,
+ * unity_events.c), always for the one tee. In the other one they are nothing,
+ * and their arguments are not evaluated. */
+#ifdef DDNET_PHYSICS_EVENTS
+enum { EVENT_BUILD = 1 };
+static inline void emit_sound(world_t *w, vec2 pos, int sound) {
+  if (w->sound)
+    w->sound(pos, sound, 0, w->user_data);
+}
+static inline void emit_particle(world_t *w, vec2 pos, int particle) {
+  if (w->particle)
+    w->particle(pos, particle, 0, w->user_data);
+}
+static inline void emit_damage_ind(world_t *w, vec2 pos, float angle, int amount) {
+  if (w->damage_indicator)
+    w->damage_indicator(pos, angle, amount, 0, w->user_data);
+}
+#define EMIT_SOUND(w, pos, sound) emit_sound(w, pos, sound)
+#define EMIT_PARTICLE(w, pos, particle) emit_particle(w, pos, particle)
+#define EMIT_DAMAGE_IND(w, pos, angle, amount) emit_damage_ind(w, pos, angle, amount)
+#else
+enum { EVENT_BUILD = 0 };
+#define EMIT_SOUND(w, pos, sound) ((void)0)
+#define EMIT_PARTICLE(w, pos, particle) ((void)0)
+#define EMIT_DAMAGE_IND(w, pos, angle, amount) ((void)0)
+#endif
 
 static inline int server_tick(const world_t *w) { return w->tick; }
 static inline const collision_t *collision(const world_t *w) { return w->collision; }

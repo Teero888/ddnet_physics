@@ -9,15 +9,24 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-add_subdirectory(libs/ddnet_maploader EXCLUDE_FROM_ALL)
+# The name of the library target. A project that wants two backends adds
+# this directory twice, each time with another backend, another name and
+# another binary directory (the map loader is shared). The tests and the
+# examples are only built for the name ddnet_physics.
+set(DDNET_PHYSICS_TARGET ddnet_physics CACHE STRING "Name of the library target")
+set(lib ${DDNET_PHYSICS_TARGET})
+
+if(NOT TARGET ddnet_map_loader)
+  add_subdirectory(libs/ddnet_maploader EXCLUDE_FROM_ALL)
+endif()
 
 # Bit-identical results depend on the compiler doing the float math exactly as
 # written: no fused multiply-add, no reordering, no x87 excess precision.
-add_library(ddnet_physics_options INTERFACE)
-target_compile_options(ddnet_physics_options INTERFACE
+add_library(${lib}_options INTERFACE)
+target_compile_options(${lib}_options INTERFACE
   -ffp-contract=off -fno-fast-math -fno-math-errno
   -Wall -Wextra -Wno-unused-parameter)
-target_compile_definitions(ddnet_physics_options INTERFACE _DEFAULT_SOURCE)
+target_compile_definitions(${lib}_options INTERFACE _DEFAULT_SOURCE)
 
 # The implementations have different structures, so one library is one of
 # them: the backend is chosen here, at compile time. There are two games, DDNet
@@ -76,11 +85,17 @@ elseif(DDNET_PHYSICS_BACKEND STREQUAL "unique_reference")
     src/unique_reference/world.c)
   set(DDNET_PHYSICS_BACKEND_DEFINITION DDNET_PHYSICS_BACKEND_UNIQUE_REFERENCE)
 elseif(DDNET_PHYSICS_BACKEND STREQUAL "unique_optimized")
-  # One translation unit, like the optimized DDNet backend.
+  # One translation unit, like the optimized DDNet backend, and its event build
+  # the same way.
   set(DDNET_PHYSICS_BACKEND_SOURCES src/common/unique_maps.c src/unique_optimized/unity.c)
+  option(DDNET_PHYSICS_EVENTS "Also build the optimized backend with events (ddnet_ev_*)" ON)
+  if(DDNET_PHYSICS_EVENTS)
+    list(APPEND DDNET_PHYSICS_BACKEND_SOURCES src/unique_optimized/unity_events.c)
+    set(DDNET_PHYSICS_EVENTS_DEFINITION DDNET_PHYSICS_HAS_EVENTS)
+  endif()
   if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
-    set_source_files_properties(src/unique_optimized/unity.c PROPERTIES COMPILE_OPTIONS
-      "-finline-limit=2000;--param=max-inline-insns-single=2000;--param=inline-unit-growth=400")
+    set_source_files_properties(src/unique_optimized/unity.c src/unique_optimized/unity_events.c PROPERTIES
+      COMPILE_OPTIONS "-finline-limit=2000;--param=max-inline-insns-single=2000;--param=inline-unit-growth=400")
   endif()
   set(DDNET_PHYSICS_BACKEND_DEFINITION DDNET_PHYSICS_BACKEND_UNIQUE_OPTIMIZED)
 elseif(DDNET_PHYSICS_BACKEND STREQUAL "reference" OR DDNET_PHYSICS_BACKEND STREQUAL "optimized")
@@ -96,15 +111,15 @@ endif()
 # exported.
 option(DDNET_PHYSICS_SHARED "Build a shared library" OFF)
 if(DDNET_PHYSICS_SHARED)
-  add_library(ddnet_physics SHARED ${DDNET_PHYSICS_COMMON} ${DDNET_PHYSICS_BACKEND_SOURCES})
-  set_target_properties(ddnet_physics PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  add_library(${lib} SHARED ${DDNET_PHYSICS_COMMON} ${DDNET_PHYSICS_BACKEND_SOURCES})
+  set_target_properties(${lib} PROPERTIES POSITION_INDEPENDENT_CODE ON)
   set_target_properties(ddnet_map_loader PROPERTIES POSITION_INDEPENDENT_CODE ON)
   if(NOT WIN32 AND NOT APPLE)
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ddnet_physics.map" "{ global: ddnet_*; local: *; };\n")
-    target_link_options(ddnet_physics PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_BINARY_DIR}/ddnet_physics.map")
+    target_link_options(${lib} PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_BINARY_DIR}/ddnet_physics.map")
   endif()
 else()
-  add_library(ddnet_physics STATIC ${DDNET_PHYSICS_COMMON} ${DDNET_PHYSICS_BACKEND_SOURCES})
+  add_library(${lib} STATIC ${DDNET_PHYSICS_COMMON} ${DDNET_PHYSICS_BACKEND_SOURCES})
 endif()
 
 # The instructions of the CPU this is built on (AVX and so on). The results
@@ -118,9 +133,9 @@ option(DDNET_PHYSICS_NATIVE "Build for the CPU of this machine (-march=native)" 
 # velocity_ramp_prepare() knows).
 set(DDNET_PHYSICS_ARCH "" CACHE STRING "-march for the library if not native (for example x86-64-v3); empty for the compiler's default")
 if(DDNET_PHYSICS_NATIVE)
-  target_compile_options(ddnet_physics PRIVATE -march=native)
+  target_compile_options(${lib} PRIVATE -march=native)
 elseif(DDNET_PHYSICS_ARCH)
-  target_compile_options(ddnet_physics PRIVATE -march=${DDNET_PHYSICS_ARCH})
+  target_compile_options(${lib} PRIVATE -march=${DDNET_PHYSICS_ARCH})
 endif()
 
 # Jumps kept off 32-byte boundaries. On Intel CPUs from Skylake to Comet Lake
@@ -141,16 +156,16 @@ if(DDNET_PHYSICS_JCC_PADDING AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|am
   endif()
   check_c_compiler_flag(${DDNET_PHYSICS_JCC_FLAG} DDNET_PHYSICS_HAVE_JCC_FLAG)
   if(DDNET_PHYSICS_HAVE_JCC_FLAG)
-    target_compile_options(ddnet_physics PRIVATE ${DDNET_PHYSICS_JCC_FLAG})
+    target_compile_options(${lib} PRIVATE ${DDNET_PHYSICS_JCC_FLAG})
   endif()
 endif()
-target_include_directories(ddnet_physics PUBLIC
+target_include_directories(${lib} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
-target_compile_definitions(ddnet_physics PUBLIC
+target_compile_definitions(${lib} PUBLIC
   ${DDNET_PHYSICS_BACKEND_DEFINITION} ${DDNET_PHYSICS_EVENTS_DEFINITION})
-target_link_libraries(ddnet_physics PUBLIC ddnet_map_loader PRIVATE ddnet_physics_options m)
-set_target_properties(ddnet_physics PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_link_libraries(${lib} PUBLIC ddnet_map_loader PRIVATE ${lib}_options m)
+set_target_properties(${lib} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 
 # Profile guided optimization. It changes how the code is laid out and what is
 # inlined, not what is computed: the results stay the same. With GCC and the
@@ -164,28 +179,28 @@ set(DDNET_PHYSICS_PGO_PROFILE "${CMAKE_BINARY_DIR}/ddnet_physics.profdata" CACHE
     "The profile: a file merged by llvm-profdata for Clang, a directory for GCC")
 if(DDNET_PHYSICS_PGO STREQUAL "generate")
   if(CMAKE_C_COMPILER_ID MATCHES "Clang")
-    target_compile_options(ddnet_physics PRIVATE -fprofile-instr-generate)
-    target_link_options(ddnet_physics PUBLIC -fprofile-instr-generate)
+    target_compile_options(${lib} PRIVATE -fprofile-instr-generate)
+    target_link_options(${lib} PUBLIC -fprofile-instr-generate)
   else()
-    target_compile_options(ddnet_physics PRIVATE -fprofile-generate=${DDNET_PHYSICS_PGO_PROFILE})
-    target_link_options(ddnet_physics PUBLIC -fprofile-generate=${DDNET_PHYSICS_PGO_PROFILE})
+    target_compile_options(${lib} PRIVATE -fprofile-generate=${DDNET_PHYSICS_PGO_PROFILE})
+    target_link_options(${lib} PUBLIC -fprofile-generate=${DDNET_PHYSICS_PGO_PROFILE})
   endif()
 elseif(DDNET_PHYSICS_PGO STREQUAL "use")
   if(CMAKE_C_COMPILER_ID MATCHES "Clang")
-    target_compile_options(ddnet_physics PRIVATE -fprofile-instr-use=${DDNET_PHYSICS_PGO_PROFILE})
+    target_compile_options(${lib} PRIVATE -fprofile-instr-use=${DDNET_PHYSICS_PGO_PROFILE})
   else()
-    target_compile_options(ddnet_physics PRIVATE
+    target_compile_options(${lib} PRIVATE
       -fprofile-use=${DDNET_PHYSICS_PGO_PROFILE} -fprofile-correction -Wno-missing-profile)
   endif()
 elseif(NOT DDNET_PHYSICS_PGO STREQUAL "off")
   message(FATAL_ERROR "ddnet_physics: unknown DDNET_PHYSICS_PGO '${DDNET_PHYSICS_PGO}'")
 endif()
 
-if(DDNET_PHYSICS_BUILD_TESTS)
+if(DDNET_PHYSICS_BUILD_TESTS AND lib STREQUAL "ddnet_physics")
   enable_testing()
   add_subdirectory(tests)
 endif()
 
-if(DDNET_PHYSICS_BUILD_EXAMPLES)
+if(DDNET_PHYSICS_BUILD_EXAMPLES AND lib STREQUAL "ddnet_physics")
   add_subdirectory(examples)
 endif()

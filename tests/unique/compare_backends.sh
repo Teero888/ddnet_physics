@@ -3,7 +3,10 @@
 # input scripts with both and compare the state of every tick bit for bit, in
 # every game mode a map is played in (see oracle/run_suite.sh).
 #
-# Usage: compare_backends.sh [-j jobs] [-t ticks] [-p players] [-n seeds] <map>...
+# Usage: compare_backends.sh [-j jobs] [-t ticks] [-p players] [-n seeds] [-e] <map>...
+#
+# With -e the optimized backend runs its event build (ddnet_ev_*), and the
+# effects and sounds of both have to be the same too (event_diff.py).
 #
 # Needs both builds:
 #   cmake -S . -B build/unique_reference -DDDNET_PHYSICS_BACKEND=unique_reference
@@ -13,13 +16,14 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 ref=${DDNET_PHYSICS_REFERENCE_BUILD:-$root/build/unique_reference}/tests/unique
 opt=${DDNET_PHYSICS_OPTIMIZED_BUILD:-$root/build/unique_optimized}/tests/unique
-jobs=$(nproc 2>/dev/null || echo 4) ticks=4000 players=8 seeds=1
-while getopts j:t:p:n: o; do
+jobs=$(nproc 2>/dev/null || echo 4) ticks=4000 players=8 seeds=1 events=
+while getopts j:t:p:n:e o; do
   case $o in
   j) jobs=$OPTARG ;;
   t) ticks=$OPTARG ;;
   p) players=$OPTARG ;;
   n) seeds=$OPTARG ;;
+  e) events=1 ;;
   *) exit 2 ;;
   esac
 done
@@ -52,7 +56,7 @@ for map in "$@"; do
   done
 done > "$work/runs"
 
-export here ref opt players ticks work
+export here ref opt players ticks work events
 xargs -P "$jobs" -I{} sh -c '
   line=$1
   map=$(printf "%s" "$line" | cut -d "$(printf "\037")" -f1)
@@ -65,10 +69,19 @@ xargs -P "$jobs" -I{} sh -c '
   d=$(mktemp -d "$work/run.XXXXXX")
   "$ref/map_points" "$map" > "$d/points"
   python3 "$here/oracle/gen_script.py" "$d/script" "$players" "$ticks" "$seed" --teleports "$d/points" $gen
-  "$ref/replay" "$map" "$d/script" "$d/expected" "$mode" $settings > /dev/null 2>&1
-  "$opt/replay" "$map" "$d/script" "$d/actual" "$mode" $settings > /dev/null 2>&1
+  if [ -n "$events" ]; then
+    REPLAY_EVENTS=$d/expected_events "$ref/replay" "$map" "$d/script" "$d/expected" "$mode" $settings > /dev/null 2>&1
+    REPLAY_EVENTS=$d/actual_events "$opt/replay" "$map" "$d/script" "$d/actual" "$mode" $settings > /dev/null 2>&1
+  else
+    "$ref/replay" "$map" "$d/script" "$d/expected" "$mode" $settings > /dev/null 2>&1
+    "$opt/replay" "$map" "$d/script" "$d/actual" "$mode" $settings > /dev/null 2>&1
+  fi
   result=$("$ref/dump_diff" "$d/expected" "$d/actual" 2>&1 | tail -4 | tr "\n" " ")
   case $result in identical*) status=ok ;; *) status=FAIL ;; esac
+  if [ -n "$events" ] && [ "$status" = ok ]; then
+    result=$(python3 "$here/event_diff.py" "$d/expected_events" "$d/actual_events" 2>&1 | tr "\n" " ")
+    case $result in identical*) ;; *) status=FAIL ;; esac
+  fi
   printf "%s\t%s\t%s\t%s\t%s\n" "$status" "$(basename "$map")" "$seed" "$config" "$result"
   rm -rf "$d"
 ' sh {} < "$work/runs" > "$work/results"

@@ -10,6 +10,7 @@
 
 #include "../collision.h"
 #include "../config.h"
+#include "../events.h"
 #include "../tuning.h"
 #include "../types.h"
 #include "../vmath.h"
@@ -114,6 +115,15 @@ typedef struct ddnet_character_t {
   ddnet_vec2_t prev_pos;
   int tele_checkpoint;
   int spawn_tick;
+
+  /* Only for the events (events.h), kept by the event build alone: the tick
+   * from which a frozen tee that fires makes its pain sound again
+   * (CCharacter::m_PainSoundTimer as a tick, which the build without events
+   * would have to count down), and how the stars of the damage indicators are
+   * spread (m_DamageTaken, m_DamageTakenTick). */
+  int pain_sound_tick;
+  int damage_taken;
+  int damage_taken_tick;
 } ddnet_character_t;
 
 /* CPlayer: the client, with or without a tee in the world. */
@@ -216,6 +226,14 @@ typedef struct ddnet_world_t {
   ddnet_vec2_t flag_pos[2];
 
   ddnet_world_shared_t *shared;
+
+  /* Effects and sounds (events.h): called when set, with user_data, by the
+   * event build (ddnet_ev_*) only; the same fields in both builds, so a world
+   * can go from one to the other. ddnet_world_copy copies them too. */
+  void *user_data;
+  ddnet_particle_fn particle;
+  ddnet_damage_indicator_fn damage_indicator;
+  ddnet_sound_fn sound;
 } ddnet_world_t;
 
 #endif

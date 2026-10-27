@@ -405,6 +405,9 @@ static ALWAYS_INLINE void core_move_quantize(world_t *w, core_t *core, const tun
 
 static void character_die(world_t *w, character_t *chr) {
   player_t *player = &w->player;
+  /* a nice sound, and bursting tee death effect */
+  EMIT_SOUND(w, chr->pos, DDNET_SOUND_PLAYER_DIE);
+  EMIT_PARTICLE(w, chr->pos, DDNET_PARTICLE_PLAYER_DEATH);
   player->previous_die_tick = player->die_tick;
   player->die_tick = server_tick(w);
   chr->alive = false;
@@ -427,6 +430,7 @@ static void race_finish(world_t *w, character_t *chr, float fraction_of_tick) {
   w->player.finish_tick = server_tick(w);
   w->player.finish_time = (fraction_of_tick - chr->start_time_offset + time_ticks) / (float)SERVER_TICK_SPEED;
   chr->race_state = DDNET_RACE_FINISHED;
+  EMIT_PARTICLE(w, chr->pos, DDNET_PARTICLE_CONFETTI);
 }
 
 /* ------------------------------------------------------------- damage */
@@ -452,6 +456,17 @@ static ALWAYS_INLINE void character_take_damage(world_t *w, character_t *chr, ve
   if (m.health) {
     /* m_pPlayer only inflicts half damage on self */
     dmg = maxi(1, dmg / 2);
+    if (EVENT_BUILD) {
+      /* create healthmod indicator, its stars apart from those of the hits just before */
+      chr->damage_taken++;
+      if (server_tick(w) < chr->damage_taken_tick + 25) {
+        EMIT_DAMAGE_IND(w, chr->pos, chr->damage_taken * 0.25f, dmg);
+      } else {
+        chr->damage_taken = 0;
+        EMIT_DAMAGE_IND(w, chr->pos, 0, dmg);
+      }
+      chr->damage_taken_tick = server_tick(w);
+    }
     if (dmg) {
       if (chr->armor) {
         if (dmg > 1) {
@@ -470,11 +485,14 @@ static ALWAYS_INLINE void character_take_damage(world_t *w, character_t *chr, ve
     }
     if (chr->health <= 0)
       character_die(w, chr);
+    else
+      EMIT_SOUND(w, chr->pos, dmg > 2 ? DDNET_SOUND_PLAYER_PAIN_LONG : DDNET_SOUND_PLAYER_PAIN_SHORT);
   }
 }
 
 /* CGameContext::CreateExplosion of a grenade of the tee */
 static ALWAYS_INLINE void create_explosion(world_t *w, vec2 pos, game_mode_t m) {
+  EMIT_PARTICLE(w, pos, DDNET_PARTICLE_EXPLOSION);
   character_t *chr = get_player_char(w);
   const float radius = 135.0f;
   const float inner_radius = 48.0f;
@@ -546,6 +564,8 @@ static ALWAYS_INLINE void projectiles_tick(world_t *w, game_mode_t m) {
     const float ct = (server_tick(w) - p->start_tick) / (float)SERVER_TICK_SPEED;
     const vec2 prev_pos = projectile_pos(w, proj, pt);
     const vec2 cur_pos = projectile_pos(w, proj, ct);
+    /* the trail a client draws behind a grenade */
+    EMIT_PARTICLE(w, prev_pos, DDNET_PARTICLE_SMOKE);
     vec2 col_pos, new_pos;
     const int collide = collision_intersect_line(col, prev_pos, cur_pos, &col_pos, &new_pos);
 
@@ -557,6 +577,7 @@ static ALWAYS_INLINE void projectiles_tick(world_t *w, game_mode_t m) {
       destroy = true;
     } else if (collide || game_layer_clipped(w, cur_pos) || p->life_span == -1) {
       create_explosion(w, col_pos, m);
+      EMIT_SOUND(w, col_pos, DDNET_SOUND_GRENADE_EXPLODE);
       destroy = true;
     }
     /* (no weapon teleporters, see ddnet_map_unsupported()) */
@@ -580,20 +601,25 @@ static ALWAYS_INLINE void pickup_touch(world_t *w, character_t *chr, int i, game
   bool respawn = false;
   switch (pickup->type) {
   case DDNET_UNIQUE_POWERUP_HEALTH:
-    if (m.health)
+    if (m.health) {
       respawn = character_increase_health(chr, 1);
-    else if (chr->freeze_time <= SV_FREEZE_DELAY * SERVER_TICK_SPEED &&
-             (chr->freeze_time == 0 || chr->core.freeze_start < server_tick(w) - SERVER_TICK_SPEED)) {
+      if (respawn)
+        EMIT_SOUND(w, pickup->pos, DDNET_SOUND_PICKUP_HEALTH);
+    } else if (chr->freeze_time <= SV_FREEZE_DELAY * SERVER_TICK_SPEED &&
+               (chr->freeze_time == 0 || chr->core.freeze_start < server_tick(w) - SERVER_TICK_SPEED)) {
       /* CCharacter::Freeze */
       chr->armor = 0;
       chr->freeze_time = SV_FREEZE_DELAY * SERVER_TICK_SPEED;
       chr->core.freeze_start = server_tick(w);
+      EMIT_SOUND(w, pickup->pos, DDNET_SOUND_PICKUP_HEALTH);
     }
     break;
 
   case DDNET_UNIQUE_POWERUP_ARMOR:
     if (m.health) {
       respawn = character_increase_armor(chr, 1);
+      if (respawn)
+        EMIT_SOUND(w, pickup->pos, DDNET_SOUND_PICKUP_ARMOR);
     } else {
       bool sound = false;
       for (int j = WEAPON_SHOTGUN; j < NUM_WEAPONS; j++) {
@@ -603,8 +629,10 @@ static ALWAYS_INLINE void pickup_touch(world_t *w, character_t *chr, int i, game
           sound = true;
         }
       }
-      if (sound)
+      if (sound) {
         chr->last_weapon = WEAPON_GUN;
+        EMIT_SOUND(w, pickup->pos, DDNET_SOUND_PICKUP_ARMOR);
+      }
       if (chr->core.active_weapon >= WEAPON_SHOTGUN)
         chr->core.active_weapon = WEAPON_HAMMER;
     }
@@ -617,6 +645,7 @@ static ALWAYS_INLINE void pickup_touch(world_t *w, character_t *chr, int i, game
       weapon->ammo = m.health ? GRENADE_MAX_AMMO : -1;
       weapon->got = true;
       respawn = m.health;
+      EMIT_SOUND(w, pickup->pos, DDNET_SOUND_PICKUP_GRENADE);
     }
   } break;
   }
@@ -643,6 +672,8 @@ static ALWAYS_INLINE void pickups_tick(world_t *w, game_mode_t m, int here_flags
       if (*spawn_tick == -1)
         continue;
       if (!chr || (*spawn_tick > 0 && server_tick(w) > *spawn_tick)) {
+        if (EVENT_BUILD && chr && w->pickups[i].type == DDNET_UNIQUE_POWERUP_WEAPON)
+          EMIT_SOUND(w, w->pickups[i].pos, DDNET_SOUND_WEAPON_SPAWN);
         *spawn_tick = -1;
         w->num_respawning--;
       } else {
@@ -690,7 +721,7 @@ static inline int select_int(int yes, int a, int b) { return b ^ ((a ^ b) & -yes
  *   if (reload_timer != 0 || queued_weapon == -1) return;
  *   if (weapons[WEAPON_NINJA].got || !weapons[queued_weapon].got) return;
  *   SetWeapon(queued_weapon), which does nothing for the active weapon */
-static ALWAYS_INLINE void character_do_weapon_switch(character_t *chr) {
+static ALWAYS_INLINE void character_do_weapon_switch(world_t *w, character_t *chr) {
   const int queued = chr->queued_weapon, active = chr->core.active_weapon;
   const int can = (chr->reload_timer == 0) & (queued != -1);
   const int index = queued & -can;
@@ -699,10 +730,12 @@ static ALWAYS_INLINE void character_do_weapon_switch(character_t *chr) {
   chr->last_weapon = select_int(change, active, chr->last_weapon);
   chr->queued_weapon = select_int(change, -1, queued);
   chr->core.active_weapon = select_int(change, queued & -((unsigned)queued < NUM_WEAPONS), active);
+  if (EVENT_BUILD && change)
+    EMIT_SOUND(w, chr->pos, DDNET_SOUND_WEAPON_SWITCH);
 }
 
 /* CCharacter::HandleWeaponSwitch, with the direct input before the latest one */
-static ALWAYS_INLINE void character_handle_weapon_switch(character_t *chr, const input_t *prev_input) {
+static ALWAYS_INLINE void character_handle_weapon_switch(world_t *w, character_t *chr, const input_t *prev_input) {
   int wanted_weapon = select_int(chr->queued_weapon != -1, chr->queued_weapon, chr->core.active_weapon);
 
   /* (the tee always has the hammer and the gun, so it has anything) */
@@ -743,7 +776,7 @@ static ALWAYS_INLINE void character_handle_weapon_switch(character_t *chr, const
     chr->queued_weapon = select_int(take, wanted_weapon, chr->queued_weapon);
   }
 
-  character_do_weapon_switch(chr);
+  character_do_weapon_switch(w, chr);
 }
 
 /* CCharacter::FireWeapon after its DoWeaponSwitch(), with the fire counter of
@@ -762,14 +795,29 @@ static ALWAYS_INLINE void character_fire_weapon_switched(world_t *w, character_t
   bool will_fire = count_input(prev_fire, fire).presses != 0;
   if (active == WEAPON_GRENADE && (fire & 1) && chr->core.weapons[active].ammo)
     will_fire = true;
-  if (!will_fire || chr->freeze_time || !chr->core.weapons[active].ammo)
+  if (!will_fire)
+    return;
+  if (chr->freeze_time) {
+    /* Timer stuff to avoid shrieking orchestra caused by unfreeze-plasma (the server counts its timer down
+     * in CCharacter::HandleWeapons, after which this comes on the same tick, or before it on the next one:
+     * the sound comes again on the tick 50 after it at the earliest) */
+    if (EVENT_BUILD && server_tick(w) >= chr->pain_sound_tick && !(prev_fire & 1)) {
+      chr->pain_sound_tick = server_tick(w) + 1 * SERVER_TICK_SPEED;
+      EMIT_SOUND(w, chr->pos, DDNET_SOUND_PLAYER_PAIN_LONG);
+    }
+    return;
+  }
+  if (!chr->core.weapons[active].ammo)
     return;
 
+  if (EVENT_BUILD && active <= WEAPON_GUN)
+    EMIT_SOUND(w, chr->pos, active == WEAPON_HAMMER ? DDNET_SOUND_HAMMER_FIRE : DDNET_SOUND_GUN_FIRE);
   if (m.weapons && active == WEAPON_GRENADE) {
     const vec2 direction = vnormalize(v2(chr->input.target_x, chr->input.target_y));
     const vec2 proj_start_pos = vadd(chr->pos, vscale(vscale(direction, PHYSICAL_SIZE), 0.75f));
     const int lifetime = (int)(SERVER_TICK_SPEED * w->tuning_values[chr->tune_zone].grenade_lifetime);
     projectile_create(w, proj_start_pos, direction, lifetime);
+    EMIT_SOUND(w, chr->pos, DDNET_SOUND_GRENADE_FIRE);
   }
   /* (the hammer and the gun hit nothing the tee could feel) */
 
@@ -802,7 +850,7 @@ static ALWAYS_INLINE void character_on_direct_input(world_t *w, character_t *chr
     chr->input.target_y = -1;
 
   if (chr->num_inputs > 1) {
-    character_handle_weapon_switch(chr, &prev_input);
+    character_handle_weapon_switch(w, chr, &prev_input);
     /* CCharacter::FireWeapon, whose DoWeaponSwitch() changes nothing right after the one HandleWeaponSwitch()
      * ends with */
     if (chr->reload_timer == 0)
@@ -1071,10 +1119,13 @@ static ALWAYS_INLINE void character_fastcap_flags(world_t *w, character_t *chr) 
     for (int check_team = 0; check_team <= TEAM_BLUE; ++check_team) {
       int opposite_team = check_team == TEAM_RED ? TEAM_BLUE : TEAM_RED;
       if (!chr->got_flag[check_team] && vdistance(pos, w->flag_pos[check_team]) < 14 + PHYSICAL_SIZE) {
-        if (!chr->got_flag[opposite_team])
+        if (!chr->got_flag[opposite_team]) {
           race_start(w, chr, fraction_of_tick);
-        else
+          EMIT_SOUND(w, chr->pos, DDNET_SOUND_CTF_GRAB_PL);
+        } else {
           race_finish(w, chr, fraction_of_tick);
+          EMIT_SOUND(w, chr->pos, DDNET_SOUND_CTF_CAPTURE);
+        }
         chr->got_flag[check_team] = true;
       }
     }
@@ -1115,7 +1166,7 @@ static ALWAYS_INLINE void character_tick(world_t *w, character_t *chr, game_mode
   } else {
     /* CCharacter::FireWeapon (nothing is pressed, the input is the one of the direct input before) */
     if (chr->queued_weapon != -1)
-      character_do_weapon_switch(chr);
+      character_do_weapon_switch(w, chr);
     character_fire_weapon_switched(w, chr, chr->input.fire, m);
   }
 
@@ -1199,6 +1250,20 @@ static ALWAYS_INLINE void character_tick(world_t *w, character_t *chr, game_mode
     core_quantize(core);
 #endif
     chr->pos = core->pos;
+
+    /* the sounds of the events of the core */
+    if (EVENT_BUILD) {
+      const int events = core->triggered_events;
+      if (events & COREEVENT_GROUND_JUMP)
+        EMIT_SOUND(w, chr->pos, DDNET_SOUND_PLAYER_JUMP);
+      if (events & COREEVENT_HOOK_ATTACH_GROUND)
+        EMIT_SOUND(w, chr->pos, DDNET_SOUND_HOOK_ATTACH_GROUND);
+      if (events & COREEVENT_HOOK_HIT_NOHOOK)
+        EMIT_SOUND(w, chr->pos, DDNET_SOUND_HOOK_NOATTACH);
+      /* (and the effect a client makes of a double jump, which the server leaves to it) */
+      if (events & COREEVENT_AIR_JUMP)
+        EMIT_PARTICLE(w, chr->pos, DDNET_PARTICLE_AIR_JUMP);
+    }
   }
 }
 
