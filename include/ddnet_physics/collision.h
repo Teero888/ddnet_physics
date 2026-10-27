@@ -35,9 +35,7 @@ enum { DDNET_MAX_TELE_NUMBER = 255, DDNET_NUM_TUNE_ZONES = 256 };
 #endif
 
 /* Copies everything it needs out of the map: the map can be freed afterwards.
- * Returns false if the map has no game layer or memory ran out, and for
- * Unique Race if the map uses something of the physics its maps do not use
- * (see ddnet_map_unsupported()). */
+ * Returns false if the map has no game layer or memory ran out. */
 bool ddnet_collision_init(ddnet_collision_t *collision, const struct map_data_t *map);
 
 #if defined(DDNET_PHYSICS_GAME_UNIQUE)
@@ -45,10 +43,13 @@ bool ddnet_collision_init(ddnet_collision_t *collision, const struct map_data_t 
  * https://github.com/unique-clan/unique-maps): no freeze, no switches or
  * doors, no specials, no hook teleporters, no new speedups, no laser walls,
  * draggers or turrets, and no map settings besides sv_kill_grenades,
- * sv_health_and_ammo and tune zones. Weapon teleporters are accepted and
- * ignored (grenades fly through them): the one map with them has them where
- * they do not matter. Returns NULL if a map is fine, or else what it has that
- * the backends do not. */
+ * sv_health_and_ammo and tune zones. Weapon teleporters are ignored (grenades
+ * fly through them): the one map with them has them where they do not matter.
+ * Returns NULL if a map is fine, or else what it has that the backends do not.
+ *
+ * Such a map is still loaded, and what it has of these is ignored: the tee
+ * does not feel it, and a run on it is not one Unique Race's server would
+ * play the same. Callers decide what to tell their users. */
 const char *ddnet_map_unsupported(const struct map_data_t *map);
 #endif
 void ddnet_collision_free(ddnet_collision_t *collision);

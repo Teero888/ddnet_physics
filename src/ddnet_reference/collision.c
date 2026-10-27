@@ -224,12 +224,6 @@ bool ddnet_collision_init(ddnet_collision_t *col, const map_data_t *map) {
   memset(col, 0, sizeof(*col));
   if (!map || !map->game_layer.data || map->width <= 0 || map->height <= 0)
     return false;
-#if defined(DDNET_PHYSICS_GAME_UNIQUE)
-  /* (this collision is also the one of the Unique reference backend) */
-  if (ddnet_map_unsupported(map))
-    return false;
-#endif
-
   col->width = map->width;
   col->height = map->height;
   if (!load_layers(col, map))

@@ -13,7 +13,7 @@ add_executable(dump_diff dump_diff.c)
 add_executable(map_points map_points.c)
 target_link_libraries(map_points PRIVATE ddnet_map_loader)
 
-# Which maps the backends refuse (ddnet_map_unsupported()).
+# Which maps have what the backends do not cover (ddnet_map_unsupported()).
 add_executable(check_maps check_maps.c)
 target_link_libraries(check_maps PRIVATE ddnet_physics)
 

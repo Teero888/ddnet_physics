@@ -17,12 +17,12 @@
  * Tiles that do nothing in Unique Race (stray tiles of other layers, time
  * checkpoints in the front layer, ...) are fine. So are weapon teleporters,
  * which the backends ignore: the only map that has them (run_crossover) has
- * them behind its finish line. A map with anything else
- * that would change the physics is refused, because the backends would get it
- * wrong: freeze, the other hookthrough tiles, the tiles of DDNet's specials,
- * hook teleporters, the new speedups, a switch layer (and so doors), laser
- * walls, draggers, turrets, and the map settings that change what the
- * backends take as fixed. */
+ * them behind its finish line. Anything else that would change the physics
+ * is reported, because the backends ignore it and so get the map wrong:
+ * freeze, the other hookthrough tiles, the tiles of DDNet's specials, hook
+ * teleporters, the new speedups, a switch layer (and so doors), laser walls,
+ * draggers, turrets, and the map settings that change what the backends take
+ * as fixed. */
 #include "console.h"
 
 #include <ddnet_map_loader.h>

@@ -1,8 +1,9 @@
-/* Which maps the Unique backends refuse, and why (ddnet_map_unsupported()).
+/* Which maps have what the Unique backends do not cover, and what
+ * (ddnet_map_unsupported()).
  *
  *   check_maps <map>...
  *
- * Prints one line per refused map and exits non-zero if there is one. */
+ * Prints one line per such map and exits non-zero if there is one. */
 #include <ddnet_map_loader.h>
 #include <ddnet_physics/ddnet_physics.h>
 
