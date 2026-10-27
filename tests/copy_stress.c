@@ -11,7 +11,7 @@
  * and entities that do something, so that switches, draggers and turrets get
  * used. A world that was restored is also compared with one that was copied
  * in full, after both went on for a while. */
-#include "../src/optimized/unity.c"
+#include "../src/ddnet_optimized/unity.c"
 #include <stdio.h>
 
 static uint64_t rng = 88172645463325252ull;

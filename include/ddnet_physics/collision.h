@@ -1,6 +1,6 @@
 /* Collisions: the static part of a map.
  *
- * The functions are the same for both implementations, the structure belongs
+ * The functions are the same for all implementations, the structure belongs
  * to the implementation the library was built as, see backend.h. */
 #ifndef DDNET_PHYSICS_COLLISION_H
 #define DDNET_PHYSICS_COLLISION_H
@@ -24,15 +24,33 @@ enum {
 /* Highest teleporter / tune zone number a tile can hold. */
 enum { DDNET_MAX_TELE_NUMBER = 255, DDNET_NUM_TUNE_ZONES = 256 };
 
-#if defined(DDNET_PHYSICS_BACKEND_REFERENCE)
-#include "reference/collision.h"
-#elif defined(DDNET_PHYSICS_BACKEND_OPTIMIZED)
-#include "optimized/collision.h"
+#if defined(DDNET_PHYSICS_BACKEND_DDNET_REFERENCE)
+#include "ddnet_reference/collision.h"
+#elif defined(DDNET_PHYSICS_BACKEND_DDNET_OPTIMIZED)
+#include "ddnet_optimized/collision.h"
+#elif defined(DDNET_PHYSICS_BACKEND_UNIQUE_REFERENCE)
+#include "unique_reference/collision.h"
+#elif defined(DDNET_PHYSICS_BACKEND_UNIQUE_OPTIMIZED)
+#include "unique_optimized/collision.h"
 #endif
 
 /* Copies everything it needs out of the map: the map can be freed afterwards.
- * Returns false if the map has no game layer or memory ran out. */
+ * Returns false if the map has no game layer or memory ran out, and for
+ * Unique Race if the map uses something of the physics its maps do not use
+ * (see ddnet_map_unsupported()). */
 bool ddnet_collision_init(ddnet_collision_t *collision, const struct map_data_t *map);
+
+#if defined(DDNET_PHYSICS_GAME_UNIQUE)
+/* The Unique backends only have what the maps of Unique Race use (all of
+ * https://github.com/unique-clan/unique-maps): no freeze, no switches or
+ * doors, no specials, no hook teleporters, no new speedups, no laser walls,
+ * draggers or turrets, and no map settings besides sv_kill_grenades,
+ * sv_health_and_ammo and tune zones. Weapon teleporters are accepted and
+ * ignored (grenades fly through them): the one map with them has them where
+ * they do not matter. Returns NULL if a map is fine, or else what it has that
+ * the backends do not. */
+const char *ddnet_map_unsupported(const struct map_data_t *map);
+#endif
 void ddnet_collision_free(ddnet_collision_t *collision);
 
 /* The raw collision queries of DDNet's CCollision. Positions are in world

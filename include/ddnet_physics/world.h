@@ -1,8 +1,9 @@
 /* Worlds: the dynamic state of a game and the functions that advance it.
  *
- * The functions are the same for both implementations. The structures are
- * not: they belong to the implementation the library was built as, see
- * backend.h. */
+ * The functions are the same for the two implementations of a game, and
+ * mostly the same for both games (a Unique Race world has one player, so its
+ * player functions take no client id). The structures are not: they belong
+ * to the implementation the library was built as, see backend.h. */
 #ifndef DDNET_PHYSICS_WORLD_H
 #define DDNET_PHYSICS_WORLD_H
 
@@ -13,10 +14,14 @@
 #include "types.h"
 #include "vmath.h"
 
-#if defined(DDNET_PHYSICS_BACKEND_REFERENCE)
-#include "reference/world.h"
-#elif defined(DDNET_PHYSICS_BACKEND_OPTIMIZED)
-#include "optimized/world.h"
+#if defined(DDNET_PHYSICS_BACKEND_DDNET_REFERENCE)
+#include "ddnet_reference/world.h"
+#elif defined(DDNET_PHYSICS_BACKEND_DDNET_OPTIMIZED)
+#include "ddnet_optimized/world.h"
+#elif defined(DDNET_PHYSICS_BACKEND_UNIQUE_REFERENCE)
+#include "unique_reference/world.h"
+#elif defined(DDNET_PHYSICS_BACKEND_UNIQUE_OPTIMIZED)
+#include "unique_optimized/world.h"
 #endif
 
 /* Create a world for a map. The config is copied, then the settings embedded
@@ -61,9 +66,19 @@ ddnet_tuning_t *ddnet_world_tuning_edit(ddnet_world_t *world);
  * the form they need. */
 void ddnet_world_tuning_changed(ddnet_world_t *world);
 
-/* Advance the world by one tick (20 ms): apply players[i].input for every
- * player, then tick everything. */
+/* Advance the world by one tick (20 ms): apply the input of every player
+ * (players[i].input, for Unique Race player.input), then tick everything. */
 void ddnet_world_tick(ddnet_world_t *world);
+
+/* The direction a tee looks in, as it is sent to clients: radians * 256
+ * (CCharacterCore::m_Angle). */
+int ddnet_character_angle(const ddnet_character_t *chr);
+/* Where a projectile is time seconds after its start tick (CProjectile::GetPos):
+ * on tick t, (t - projectile->u.projectile.start_tick) / 50.0f, which is where
+ * DDNet and its clients draw it; a tick earlier for where it came from. */
+ddnet_vec2_t ddnet_projectile_get_pos(const ddnet_world_t *world, const ddnet_entity_t *projectile, float time);
+
+#if defined(DDNET_PHYSICS_GAME_DDNET)
 
 /* Connect a player. The tee spawns during the next tick. Returns false if the
  * client id is out of range or in use. */
@@ -81,9 +96,6 @@ void ddnet_player_kill(ddnet_world_t *world, int client_id);
 /* Put a player into a ddrace team (0 = no team), without the checks of the
  * /team chat command. */
 void ddnet_player_set_team(ddnet_world_t *world, int client_id, int team);
-/* The direction a tee looks in, as it is sent to clients: radians * 256
- * (CCharacterCore::m_Angle). */
-int ddnet_character_angle(const ddnet_character_t *chr);
 /* The tee of a player, or NULL if the player has no living tee. */
 ddnet_character_t *ddnet_world_character(ddnet_world_t *world, int client_id);
 /* Tells the world that the tee of a player was written to from outside
@@ -93,12 +105,7 @@ ddnet_character_t *ddnet_world_character(ddnet_world_t *world, int client_id);
  * after writing to a tee directly, before the next tick. Does nothing in the
  * reference backend. */
 void ddnet_character_changed(ddnet_world_t *world, int client_id);
-/* Where a projectile is time seconds after its start tick (CProjectile::GetPos):
- * on tick t, (t - projectile->u.projectile.start_tick) / 50.0f, which is where
- * DDNet and its clients draw it; a tick earlier for where it came from. */
-ddnet_vec2_t ddnet_projectile_get_pos(const ddnet_world_t *world, const ddnet_entity_t *projectile, float time);
-
-#if defined(DDNET_PHYSICS_BACKEND_OPTIMIZED)
+#if defined(DDNET_PHYSICS_BACKEND_DDNET_OPTIMIZED)
 /* The event build of the optimized backend (if the library was built with
  * DDNET_PHYSICS_EVENTS, the default, which defines DDNET_PHYSICS_HAS_EVENTS): the same functions, which call the
  * callbacks of the world for effects and sounds (events.h), while the ones
@@ -123,6 +130,37 @@ void ddnet_ev_player_kill(ddnet_world_t *world, int client_id);
 void ddnet_ev_player_set_team(ddnet_world_t *world, int client_id, int team);
 int ddnet_ev_character_angle(const ddnet_character_t *chr);
 ddnet_character_t *ddnet_ev_world_character(ddnet_world_t *world, int client_id);
+#endif
+
+#elif defined(DDNET_PHYSICS_GAME_UNIQUE)
+
+/* Unique Race: a world has one player, which is connected from
+ * ddnet_world_init() on and spawns during the first tick. */
+
+/* The tee spawns in the next tick, after the tick of the world, as on a
+ * server. This spawns it right away instead, where it would have spawned
+ * then: for setting up a world whose tee stands at the spawn on its first
+ * tick. Returns whether the player has a tee now (false if there is no
+ * spawn). */
+bool ddnet_player_spawn(ddnet_world_t *world);
+/* Kill the tee like the kill bind does (CGameContext::OnKillNetMessage); it
+ * respawns on the next tick. Unique Race allows that once per half second
+ * (for grenade lineups): returns false, and does nothing, if the last kill
+ * was less than 25 ticks ago or there is no tee. (The kill protection of
+ * runs over 20 minutes is not there.) */
+bool ddnet_player_kill(ddnet_world_t *world);
+/* fastcap: the /red (side 1) and /blue (side 2) chat commands, which choose
+ * the spawns of the tee and kill it to respawn there, with the kill delay of
+ * ddnet_player_kill(). Returns whether the tee was killed. */
+bool ddnet_player_set_fastcap_side(ddnet_world_t *world, int side);
+/* The tee, or NULL if the player has no living tee. */
+ddnet_character_t *ddnet_world_character(ddnet_world_t *world);
+/* Tells the world that the tee was written to from outside (where it is, its
+ * speed, hook, weapons and so on, for example to put it somewhere else or to
+ * show a recorded state). Call this after writing to the tee directly,
+ * before the next tick. Does nothing in the reference backend. */
+void ddnet_character_changed(ddnet_world_t *world);
+
 #endif
 
 #endif

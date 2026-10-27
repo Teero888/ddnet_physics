@@ -59,6 +59,14 @@ typedef enum {
   DDNET_SOUND_WEAPON_SPAWN,
   DDNET_SOUND_WEAPON_NOAMMO,
   DDNET_SOUND_HIT,
+  DDNET_SOUND_CHAT_SERVER,
+  DDNET_SOUND_CHAT_CLIENT,
+  DDNET_SOUND_CHAT_HIGHLIGHT,
+  DDNET_SOUND_CTF_DROP,
+  DDNET_SOUND_CTF_RETURN,
+  DDNET_SOUND_CTF_GRAB_PL, /* (Unique Race: a tee touched the first flag of fastcap) */
+  DDNET_SOUND_CTF_GRAB_EN,
+  DDNET_SOUND_CTF_CAPTURE, /* (Unique Race: and the second) */
 } ddnet_sound_t;
 
 /* The effects. The numbers are the ones of the earlier ddnet_physics_c. */

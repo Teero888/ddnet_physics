@@ -42,11 +42,11 @@ out=$root/build/pgo
 rm -rf "$out"
 if [ "$compiler" = clang ]; then
   profile=$out/ddnet_physics.profdata
-  cmake -S "$root" -B "$out" -G Ninja -DCMAKE_C_COMPILER=clang -DDDNET_PHYSICS_BACKEND=optimized \
+  cmake -S "$root" -B "$out" -G Ninja -DCMAKE_C_COMPILER=clang -DDDNET_PHYSICS_BACKEND=ddnet_optimized \
     -DDDNET_PHYSICS_NATIVE=ON -DDDNET_PHYSICS_PGO=generate > /dev/null
 else
   profile=$out/profile
-  cmake -S "$root" -B "$out" -G Ninja -DDDNET_PHYSICS_BACKEND=optimized -DDDNET_PHYSICS_NATIVE=ON \
+  cmake -S "$root" -B "$out" -G Ninja -DDDNET_PHYSICS_BACKEND=ddnet_optimized -DDDNET_PHYSICS_NATIVE=ON \
     -DDDNET_PHYSICS_PGO=generate -DDDNET_PHYSICS_PGO_PROFILE="$profile" > /dev/null
 fi
 cmake --build "$out" --target bench > /dev/null

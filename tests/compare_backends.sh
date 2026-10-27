@@ -9,7 +9,7 @@
 #
 # Needs both builds:
 #   cmake -S . -B build/release                                     (reference)
-#   cmake -S . -B build/opt -DDDNET_PHYSICS_BACKEND=optimized
+#   cmake -S . -B build/opt -DDDNET_PHYSICS_BACKEND=ddnet_optimized
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)

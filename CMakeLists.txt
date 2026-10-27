@@ -19,46 +19,73 @@ target_compile_options(ddnet_physics_options INTERFACE
   -Wall -Wextra -Wno-unused-parameter)
 target_compile_definitions(ddnet_physics_options INTERFACE _DEFAULT_SOURCE)
 
-# The two implementations have different structures, so one library is one of
-# them: the backend is chosen here, at compile time.
-set(DDNET_PHYSICS_BACKEND reference CACHE STRING
-    "Implementation to build: reference (readable port of DDNet) or optimized")
-set_property(CACHE DDNET_PHYSICS_BACKEND PROPERTY STRINGS reference optimized)
+# The implementations have different structures, so one library is one of
+# them: the backend is chosen here, at compile time. There are two games, DDNet
+# and the Unique Race mod of it (solo race with grenades, see
+# include/ddnet_physics/backend.h), each with a reference implementation (a
+# readable port of the server) and an optimized one.
+set(DDNET_PHYSICS_BACKEND ddnet_reference CACHE STRING
+    "Implementation to build: ddnet_reference, ddnet_optimized, unique_reference or unique_optimized")
+set_property(CACHE DDNET_PHYSICS_BACKEND PROPERTY STRINGS
+  ddnet_reference ddnet_optimized unique_reference unique_optimized)
 
 set(DDNET_PHYSICS_COMMON
   src/common/config.c
   src/common/console.c
   src/common/tuning.c)
 
-if(DDNET_PHYSICS_BACKEND STREQUAL "reference")
+if(DDNET_PHYSICS_BACKEND STREQUAL "ddnet_reference")
   set(DDNET_PHYSICS_BACKEND_SOURCES
-    src/reference/character.c
-    src/reference/character_core.c
-    src/reference/collision.c
-    src/reference/entities.c
-    src/reference/gamecontroller.c
-    src/reference/teams.c
-    src/reference/world.c)
-  set(DDNET_PHYSICS_BACKEND_DEFINITION DDNET_PHYSICS_BACKEND_REFERENCE)
-elseif(DDNET_PHYSICS_BACKEND STREQUAL "optimized")
+    src/ddnet_reference/character.c
+    src/ddnet_reference/character_core.c
+    src/ddnet_reference/collision.c
+    src/ddnet_reference/entities.c
+    src/ddnet_reference/gamecontroller.c
+    src/ddnet_reference/teams.c
+    src/ddnet_reference/world.c)
+  set(DDNET_PHYSICS_BACKEND_DEFINITION DDNET_PHYSICS_BACKEND_DDNET_REFERENCE)
+elseif(DDNET_PHYSICS_BACKEND STREQUAL "ddnet_optimized")
   # One translation unit, so that everything on the tick path can be inlined.
-  set(DDNET_PHYSICS_BACKEND_SOURCES src/optimized/unity.c)
+  set(DDNET_PHYSICS_BACKEND_SOURCES src/ddnet_optimized/unity.c)
   # The event build (unity_events.c): the same code once more, which calls the
   # callbacks of include/ddnet_physics/events.h, as the functions ddnet_ev_*.
   # The build without events is not changed by it.
   option(DDNET_PHYSICS_EVENTS "Also build the optimized backend with events (ddnet_ev_*)" ON)
   if(DDNET_PHYSICS_EVENTS)
-    list(APPEND DDNET_PHYSICS_BACKEND_SOURCES src/optimized/unity_events.c)
+    list(APPEND DDNET_PHYSICS_BACKEND_SOURCES src/ddnet_optimized/unity_events.c)
     set(DDNET_PHYSICS_EVENTS_DEFINITION DDNET_PHYSICS_HAS_EVENTS)
   endif()
   # GCC stops inlining earlier than is good for it here: 3 % more ticks per
   # second on every map that was tried. (What must stay out of line is marked
   # DDNET_NOINLINE.)
   if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
-    set_source_files_properties(src/optimized/unity.c src/optimized/unity_events.c PROPERTIES COMPILE_OPTIONS
+    set_source_files_properties(src/ddnet_optimized/unity.c src/ddnet_optimized/unity_events.c PROPERTIES COMPILE_OPTIONS
       "-finline-limit=2000;--param=max-inline-insns-single=2000;--param=inline-unit-growth=400")
   endif()
-  set(DDNET_PHYSICS_BACKEND_DEFINITION DDNET_PHYSICS_BACKEND_OPTIMIZED)
+  set(DDNET_PHYSICS_BACKEND_DEFINITION DDNET_PHYSICS_BACKEND_DDNET_OPTIMIZED)
+elseif(DDNET_PHYSICS_BACKEND STREQUAL "unique_reference")
+  # Unique Race has DDNet's collision, and a function of its own on top.
+  set(DDNET_PHYSICS_BACKEND_SOURCES
+    src/common/unique_maps.c
+    src/ddnet_reference/collision.c
+    src/unique_reference/character.c
+    src/unique_reference/character_core.c
+    src/unique_reference/collision.c
+    src/unique_reference/entities.c
+    src/unique_reference/gamecontroller.c
+    src/unique_reference/world.c)
+  set(DDNET_PHYSICS_BACKEND_DEFINITION DDNET_PHYSICS_BACKEND_UNIQUE_REFERENCE)
+elseif(DDNET_PHYSICS_BACKEND STREQUAL "unique_optimized")
+  # One translation unit, like the optimized DDNet backend.
+  set(DDNET_PHYSICS_BACKEND_SOURCES src/common/unique_maps.c src/unique_optimized/unity.c)
+  if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    set_source_files_properties(src/unique_optimized/unity.c PROPERTIES COMPILE_OPTIONS
+      "-finline-limit=2000;--param=max-inline-insns-single=2000;--param=inline-unit-growth=400")
+  endif()
+  set(DDNET_PHYSICS_BACKEND_DEFINITION DDNET_PHYSICS_BACKEND_UNIQUE_OPTIMIZED)
+elseif(DDNET_PHYSICS_BACKEND STREQUAL "reference" OR DDNET_PHYSICS_BACKEND STREQUAL "optimized")
+  message(FATAL_ERROR "ddnet_physics: the backend '${DDNET_PHYSICS_BACKEND}' is now called "
+                      "'ddnet_${DDNET_PHYSICS_BACKEND}'")
 else()
   message(FATAL_ERROR "ddnet_physics: unknown DDNET_PHYSICS_BACKEND '${DDNET_PHYSICS_BACKEND}'")
 endif()

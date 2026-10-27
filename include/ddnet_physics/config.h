@@ -1,8 +1,12 @@
 #ifndef DDNET_PHYSICS_CONFIG_H
 #define DDNET_PHYSICS_CONFIG_H
 
+#include "backend.h"
+
 #include <stdbool.h>
 #include <stdint.h>
+
+#if defined(DDNET_PHYSICS_GAME_DDNET)
 
 typedef enum ddnet_gamemode_t { DDNET_MODE_DDRACE = 0, DDNET_NUM_MODES } ddnet_gamemode_t;
 
@@ -64,6 +68,42 @@ typedef struct ddnet_config_t {
   .sv_plasma_range = 700, .sv_plasma_per_sec = 3, .sv_dragger_range = 700, .sv_team = DDNET_SV_TEAM_ALLOWED, \
   .sv_solo_server = 0, .sv_max_team_size = 128, .sv_rejoin_team_0 = 1, .sv_pauseable = 0,                    \
   .sv_pause_frequency = 1, .sv_shotgun_bullet_sound = 0, .bug_grenade_double_explosion = false
+
+#elif defined(DDNET_PHYSICS_GAME_UNIQUE)
+
+/* The game modes of Unique Race (sv_gametype). Shorts is race. */
+typedef enum ddnet_gamemode_t {
+  DDNET_MODE_UNIQUE_RACE = 0,
+  DDNET_MODE_UNIQUE_FASTCAP,
+  /* fastcap with sv_no_weapons 1: no grenades anywhere */
+  DDNET_MODE_UNIQUE_FASTCAP_NO_WEAPONS,
+  DDNET_NUM_MODES
+} ddnet_gamemode_t;
+
+/* Everything outside of the map and the tuning that changes the physics of
+ * Unique Race: the server settings of the same name that its maps set. (The
+ * other settings of its servers are at their defaults, and its maps do not
+ * change them.)
+ *
+ * Fastcap has both settings on, whatever they are set to. After
+ * ddnet_world_init(), world->config has that applied, like the map settings.
+ *
+ * A zero initialized struct is the default configuration of race; start from
+ * ddnet_config_default() for the other modes, or set the gamemode. */
+typedef struct ddnet_config_t {
+  ddnet_gamemode_t gamemode;
+
+  /* Tees take damage from their grenades and die of it, have 10 grenades,
+   * and hearts, shields and grenades give health, armor and ammo (and are
+   * gone for 15 seconds after) instead of freezing and taking the grenade. */
+  int sv_health_and_ammo;
+  /* The grenades of a tee are gone when it dies (sv_destroy_bullets_on_death). */
+  int sv_kill_grenades;
+} ddnet_config_t;
+
+#define DDNET_CONFIG_DEFAULTS .gamemode = DDNET_MODE_UNIQUE_RACE, .sv_health_and_ammo = 0, .sv_kill_grenades = 0
+
+#endif
 
 ddnet_config_t ddnet_config_default(ddnet_gamemode_t gamemode);
 

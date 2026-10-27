@@ -4,6 +4,7 @@
 #include <strings.h>
 
 /* name, default, min, max, may be set by a map (CFGFLAG_GAME) */
+#if defined(DDNET_PHYSICS_GAME_DDNET)
 #define CONFIG_VARIABLES(X)                                                                                  \
   X(sv_hit, "sv_hit", 1, 0, 1, true)                                                                         \
   X(sv_endless_drag, "sv_endless_drag", 0, 0, 1, true)                                                       \
@@ -28,6 +29,11 @@
   X(sv_pauseable, "sv_pauseable", 0, 0, 1, true)                                                             \
   X(sv_pause_frequency, "sv_pause_frequency", 1, 0, 9999, false)                                             \
   X(sv_shotgun_bullet_sound, "sv_shotgun_bullet_sound", 0, 0, 1, false)
+#else
+#define CONFIG_VARIABLES(X)                                                                                  \
+  X(sv_health_and_ammo, "sv_health_and_ammo", 0, 0, 1, true)                                                 \
+  X(sv_kill_grenades, "sv_kill_grenades", 0, 0, 1, true)
+#endif
 
 typedef struct config_variable_t {
   const char *name;
